@@ -51,6 +51,16 @@ func TestAuthAndStatus(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("code %d body %s", rr.Code, rr.Body.String())
 	}
+	// healthz open
+	rr = doJSON(t, h, http.MethodGet, "/healthz", "", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatal(rr.Code)
+	}
+	// readyz 503 when DNS not started
+	rr = doJSON(t, h, http.MethodGet, "/readyz", "", nil)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("readyz want 503 got %d %s", rr.Code, rr.Body.String())
+	}
 }
 
 func TestRulesAndResolveBlock(t *testing.T) {

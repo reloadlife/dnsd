@@ -1,29 +1,42 @@
 # dnsd configuration
 
-## Daemon flags
+## Daemon flags & env
+
+Every flag has a matching `DNSD_*` environment variable (flag wins when both set).
 
 ```bash
 dnsd \
   --listen 127.0.0.1:51920 \
-  --token dev-token \
+  --token "$DNSD_TOKEN" \
   --dns-listen 127.0.0.1:5353 \
+  --state-file /var/lib/dnsd/state.json \
   --bind-ip 192.168.20.6 \
   --bind-iface wg0 \
-  --upstream '1.1.1.1:53,tls://1.1.1.1,https://cloudflare-dns.com/dns-query'
+  --upstream '1.1.1.1:53,https://1.1.1.1/dns-query'
 ```
 
-| Flag | Default | Meaning |
-|------|---------|---------|
-| `--listen` | `127.0.0.1:51920` | HTTP control API |
-| `--token` | `dev-token` | Bearer token |
-| `--dns-listen` | `127.0.0.1:5353` | UDP+TCP DNS |
-| `--bind-ip` | empty | default outbound source IP |
-| `--bind-iface` | empty | default outbound interface (Linux `SO_BINDTODEVICE`) |
-| `--upstream` | `1.1.1.1:53,8.8.8.8:53` | CSV default upstreams |
+| Flag | Env | Default | Meaning |
+|------|-----|---------|---------|
+| `--listen` | `DNSD_LISTEN` | `127.0.0.1:51920` | Control API |
+| `--token` | `DNSD_TOKEN` | *(required in prod)* | Bearer secret |
+| `--dns-listen` | `DNSD_DNS_LISTEN` | `127.0.0.1:5353` | UDP+TCP DNS |
+| `--bind-ip` | `DNSD_BIND_IP` | empty | outbound source IP |
+| `--bind-iface` | `DNSD_BIND_IFACE` | empty | outbound iface (`SO_BINDTODEVICE`) |
+| `--upstream` | `DNSD_UPSTREAM` | `1.1.1.1:53,8.8.8.8:53` | CSV default upstreams |
+| `--state-file` | `DNSD_STATE_FILE` | empty | durable JSON state |
+| `--tls-cert` | `DNSD_TLS_CERT` | empty | control API TLS cert |
+| `--tls-key` | `DNSD_TLS_KEY` | empty | control API TLS key |
+| `--allow-insecure` | `DNSD_ALLOW_INSECURE` | false | allow empty/`dev-token` on non-loopback |
+| `--shutdown-timeout` | — | `10s` | graceful stop |
+
+### Safety
+
+- Non-loopback `--listen` with empty or `dev-token` **refuses to start** unless `--allow-insecure`.
+- Prefer loopback control API + SSH tunnel, or TLS certs.
 
 ## Runtime config (API)
 
-`PUT /v1/config` updates listeners (UDP/TCP/DoT/DoH), default upstreams, binds, cache, log size, transparent plan. Apply restarts DNS listeners.
+`PUT /v1/config` updates listeners (UDP/TCP/DoT/DoH), default upstreams, binds, cache, log size, transparent plan. Apply restarts DNS listeners and persists when `--state-file` is set.
 
 ### Listeners
 
@@ -36,17 +49,28 @@ dnsd \
 
 ### Outbound path selection
 
-Priority for source address of upstream queries:
-
 1. Per-upstream `bind_ip` / `bind_iface`
-2. Profile `bind_ip` / `bind_iface` (when using profile upstreams)
-3. Global config / `--bind-ip` / `--bind-iface`
+2. Profile `bind_ip` / `bind_iface`
+3. Global config / CLI flags
 
-Use this to force recursive queries out a VPN tunnel interface while still answering on the LAN.
+### State file format
+
+```json
+{
+  "version": 1,
+  "saved_at": "2026-07-15T18:00:00Z",
+  "generation": 3,
+  "config": { "listeners": { "udp": "127.0.0.1:5353", "tcp": "127.0.0.1:5353" }, "...": "..." },
+  "profiles": [],
+  "rules": []
+}
+```
+
+Written atomically (`*.tmp` + rename). Debounced ~500ms after mutations; flushed on SIGTERM.
 
 ## Transparent redirect (plan only)
 
-When `transparent: true`, apply returns `nft` commands to redirect client UDP/TCP :53 to the local listen port. Execution is left to the operator / host agent (same pattern as netpolicyd dry-run commands).
+When `transparent: true`, apply returns `nft` redirect commands. Host agent / operator executes them.
 
 ## CLI env
 
@@ -58,4 +82,4 @@ When `transparent: true`, apply returns `nft` commands to redirect client UDP/TC
 
 ## Example env files
 
-See `configs/dnsd.example.env` and `configs/dnsctl.example.env`.
+`configs/dnsd.example.env` · `configs/dnsctl.example.env`

@@ -1,20 +1,47 @@
 [Unit]
 Description=dnsd — host DNS policy resolver
+Documentation=https://github.com/reloadlife/dnsd
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
+User=dnsd
+Group=dnsd
 EnvironmentFile=-/etc/dnsd/dnsd.env
 ExecStart=/usr/local/bin/dnsd \
   --listen ${DNSD_LISTEN:-127.0.0.1:51920} \
-  --token ${DNSD_TOKEN:-dev-token} \
+  --token ${DNSD_TOKEN} \
   --dns-listen ${DNSD_DNS_LISTEN:-127.0.0.1:5353} \
-  --upstream ${DNSD_UPSTREAM:-1.1.1.1:53,8.8.8.8:53}
+  --upstream ${DNSD_UPSTREAM:-1.1.1.1:53,8.8.8.8:53} \
+  --state-file ${DNSD_STATE_FILE:-/var/lib/dnsd/state.json} \
+  --bind-ip ${DNSD_BIND_IP:-} \
+  --bind-iface ${DNSD_BIND_IFACE:-}
 Restart=on-failure
 RestartSec=2
-# AmbientCapabilities=CAP_NET_BIND_SERVICE
-# User=dnsd
+TimeoutStopSec=15
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictNamespaces=true
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/dnsd
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dnsd
 
 [Install]
 WantedBy=multi-user.target

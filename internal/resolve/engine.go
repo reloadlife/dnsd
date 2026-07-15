@@ -81,6 +81,15 @@ func (e *Engine) Handle(ctx context.Context, req *dns.Msg, client, proto string)
 	ev.Name = name
 	ev.QType = dns.TypeToString[q.Qtype]
 
+	// Production guards: length, class, qtype
+	if err := validateQuestion(name, q); err != nil {
+		ev.Action = "error"
+		ev.Error = err.Error()
+		ev.RCode = dns.RcodeToString[dns.RcodeFormatError]
+		ev.LatencyMs = msSince(start)
+		return rcode(req, dns.RcodeFormatError), ev
+	}
+
 	// Match rule
 	rule := e.match(name, q.Qtype)
 	if rule != nil {
@@ -392,6 +401,25 @@ func minTTL(m *dns.Msg, cap uint32) time.Duration {
 
 func msSince(t time.Time) float64 {
 	return float64(time.Since(t).Microseconds()) / 1000.0
+}
+
+func validateQuestion(name string, q dns.Question) error {
+	if name == "" {
+		return fmt.Errorf("empty name")
+	}
+	if len(name) > 253 {
+		return fmt.Errorf("name too long")
+	}
+	if q.Qclass != dns.ClassINET {
+		return fmt.Errorf("unsupported class %d", q.Qclass)
+	}
+	// reject path-like / control characters
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("invalid name character")
+		}
+	}
+	return nil
 }
 
 func firstNonEmpty(a, b string) string {

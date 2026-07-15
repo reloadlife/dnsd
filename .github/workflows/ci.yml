@@ -36,13 +36,15 @@ jobs:
       - name: Smoke (local daemon)
         run: |
           set -euo pipefail
-          ./bin/dnsd --listen 127.0.0.1:51929 --token ci-token --dns-listen 127.0.0.1:5359 &
+          STATE=$(mktemp)
+          ./bin/dnsd --listen 127.0.0.1:51929 --token ci-token --dns-listen 127.0.0.1:5359 --state-file "$STATE" &
           pid=$!
-          trap 'kill $pid 2>/dev/null || true' EXIT
-          for i in $(seq 1 30); do
+          trap 'kill $pid 2>/dev/null || true; rm -f "$STATE"' EXIT
+          for i in $(seq 1 50); do
             curl -sf http://127.0.0.1:51929/healthz && break
             sleep 0.1
           done
+          curl -sf http://127.0.0.1:51929/readyz | grep -q ready
           curl -sf -H "Authorization: Bearer ci-token" http://127.0.0.1:51929/v1/status | grep -q dns_serving
           curl -sf -H "Authorization: Bearer ci-token" -H 'Content-Type: application/json' \
             -d '{"pattern":"ci.block","match":"suffix","action":"block","enabled":true}' \
@@ -58,3 +60,17 @@ jobs:
           DNSCTL_URL=http://127.0.0.1:51929 DNSCTL_TOKEN=ci-token ./bin/dnsctl status | grep -q backend
           DNSCTL_URL=http://127.0.0.1:51929 DNSCTL_TOKEN=ci-token ./bin/dnsctl rules | grep -q ci.block
           DNSCTL_URL=http://127.0.0.1:51929 DNSCTL_TOKEN=ci-token ./bin/dnsctl resolve ci.local A | grep -q 10.9.9.9
+          # persistence: restart and ensure rules survive
+          kill $pid
+          wait $pid 2>/dev/null || true
+          test -s "$STATE"
+          ./bin/dnsd --listen 127.0.0.1:51929 --token ci-token --dns-listen 127.0.0.1:5359 --state-file "$STATE" &
+          pid=$!
+          for i in $(seq 1 50); do
+            curl -sf http://127.0.0.1:51929/healthz && break
+            sleep 0.1
+          done
+          DNSCTL_URL=http://127.0.0.1:51929 DNSCTL_TOKEN=ci-token ./bin/dnsctl rules | grep -q ci.local
+          if command -v dig >/dev/null; then
+            dig @127.0.0.1 -p 5359 ci.local +short +time=2 | grep -q 10.9.9.9
+          fi

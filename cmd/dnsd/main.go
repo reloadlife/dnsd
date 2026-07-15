@@ -3,14 +3,18 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
+	"time"
 
 	"github.com/reloadlife/dnsd/internal/api"
 	"github.com/reloadlife/dnsd/internal/resolve"
@@ -18,30 +22,76 @@ import (
 	pkg "github.com/reloadlife/dnsd/pkg/api"
 )
 
-var version = "0.1.0-dev"
+// version set via -ldflags -X main.version=…
+var version = "0.1.0"
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "version" {
+	log.SetFlags(log.LstdFlags | log.LUTC | log.Lmsgprefix)
+	log.SetPrefix("dnsd ")
+
+	if len(os.Args) > 1 && (os.Args[1] == "version" || os.Args[1] == "-v" || os.Args[1] == "--version") {
 		fmt.Println(version)
 		return
 	}
 
-	listen := flag.String("listen", "127.0.0.1:51920", "HTTP control API listen address")
-	token := flag.String("token", "dev-token", "Bearer token for /v1/*")
-	dnsListen := flag.String("dns-listen", "127.0.0.1:5353", "UDP/TCP DNS listen address")
-	bindIP := flag.String("bind-ip", "", "default outbound source IP for upstream queries")
-	bindIface := flag.String("bind-iface", "", "default outbound interface for upstream queries")
-	upstream := flag.String("upstream", "1.1.1.1:53,8.8.8.8:53", "comma-separated default upstreams (dns/DoT/DoH URLs)")
+	var (
+		listen    = flag.String("listen", env("DNSD_LISTEN", "127.0.0.1:51920"), "HTTP control API listen address")
+		token     = flag.String("token", env("DNSD_TOKEN", ""), "Bearer token for /v1/* (required unless --allow-insecure)")
+		dnsListen = flag.String("dns-listen", env("DNSD_DNS_LISTEN", "127.0.0.1:5353"), "UDP/TCP DNS listen address")
+		bindIP    = flag.String("bind-ip", env("DNSD_BIND_IP", ""), "default outbound source IP for upstream queries")
+		bindIface = flag.String("bind-iface", env("DNSD_BIND_IFACE", ""), "default outbound interface for upstream queries")
+		upstream  = flag.String("upstream", env("DNSD_UPSTREAM", "1.1.1.1:53,8.8.8.8:53"), "comma-separated default upstreams")
+		stateFile = flag.String("state-file", env("DNSD_STATE_FILE", ""), "persist rules/profiles/config to this JSON path")
+		tlsCert   = flag.String("tls-cert", env("DNSD_TLS_CERT", ""), "optional TLS cert for control API")
+		tlsKey    = flag.String("tls-key", env("DNSD_TLS_KEY", ""), "optional TLS key for control API")
+		allowInsec = flag.Bool("allow-insecure", envBool("DNSD_ALLOW_INSECURE", false), "allow empty token (dev only)")
+		shutdown  = flag.Duration("shutdown-timeout", 10*time.Second, "graceful shutdown timeout")
+	)
 	flag.Parse()
 
+	// Token defaults: keep dev-token only for loopback + allow-insecure path via env empty
+	tok := strings.TrimSpace(*token)
+	if tok == "" {
+		tok = strings.TrimSpace(os.Getenv("DNSD_TOKEN"))
+	}
+	if tok == "" && *allowInsec {
+		tok = "dev-token"
+		log.Printf("WARNING: --allow-insecure: using default token %q", tok)
+	}
+	if tok == "" || tok == "dev-token" {
+		if !isLoopbackAddr(*listen) && !*allowInsec {
+			log.Fatal("refusing to start: set --token / DNSD_TOKEN to a strong secret when binding a non-loopback control API (or pass --allow-insecure)")
+		}
+		if tok == "" {
+			tok = "dev-token"
+			log.Printf("WARNING: control API token not set; using %q (loopback only). Set DNSD_TOKEN in production.", tok)
+		} else if tok == "dev-token" {
+			log.Printf("WARNING: control API using default dev-token — change DNSD_TOKEN before production")
+		}
+	}
+
 	st := store.New()
+	persister := store.NewPersister(st, *stateFile)
+	if persister.Enabled() {
+		if err := persister.LoadInto(); err != nil {
+			log.Fatalf("load state %s: %v", *stateFile, err)
+		}
+		log.Printf("loaded state from %s", *stateFile)
+	}
+
 	cfg := st.Config()
+	// CLI overrides for listen/upstream take effect unless state already set non-default listeners
+	// Always apply CLI dns-listen / bind / upstream as operational defaults on top of file.
 	if *dnsListen != "" {
 		cfg.Listeners.UDP = *dnsListen
 		cfg.Listeners.TCP = *dnsListen
 	}
-	cfg.BindIP = *bindIP
-	cfg.BindIface = *bindIface
+	if *bindIP != "" {
+		cfg.BindIP = *bindIP
+	}
+	if *bindIface != "" {
+		cfg.BindIface = *bindIface
+	}
 	if *upstream != "" {
 		var ups []pkg.Upstream
 		for _, p := range splitCSV(*upstream) {
@@ -57,66 +107,115 @@ func main() {
 	eng := resolve.NewEngine(st, tel)
 	dnsSrv := resolve.NewServer(eng)
 
-	// Start DNS listeners immediately
-	if err := dnsSrv.Start(cfg.Listeners); err != nil {
-		log.Printf("dns listener warning: %v", err)
+	if err := dnsSrv.Start(st.Config().Listeners); err != nil {
+		log.Printf("dns listener error: %v", err)
+		// still serve control API so operators can fix config
 	}
 
-	srv := &api.Server{
+	apiSrv := &api.Server{
 		Store:   st,
 		Engine:  eng,
 		DNS:     dnsSrv,
-		Token:   *token,
+		Persist: persister,
+		Token:   tok,
 		Version: version,
 	}
 
-	httpSrv := &http.Server{Addr: *listen, Handler: logRequest(srv.Handler())}
+	httpSrv := &http.Server{
+		Addr:              *listen,
+		Handler:           apiSrv.Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
+
+	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("dnsd %s control API on %s dns=%s go=%s",
-			version, *listen, *dnsListen, runtime.Version())
-		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatal(err)
+		log.Printf("%s control API on %s dns=%s state=%q go=%s",
+			version, *listen, st.DNSListen(), *stateFile, runtime.Version())
+		var err error
+		if *tlsCert != "" && *tlsKey != "" {
+			log.Printf("control API TLS enabled")
+			err = httpSrv.ListenAndServeTLS(*tlsCert, *tlsKey)
+		} else {
+			if !isLoopbackAddr(*listen) {
+				log.Printf("WARNING: control API is plain HTTP on non-loopback — prefer --tls-cert/--tls-key or bind loopback behind a reverse proxy")
+			}
+			err = httpSrv.ListenAndServe()
 		}
+		if err != nil && err != http.ErrServerClosed {
+			errCh <- err
+		}
+		close(errCh)
 	}()
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	<-sig
-	log.Printf("dnsd shutting down")
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			log.Fatalf("http server: %v", err)
+		}
+	case sigN := <-sig:
+		log.Printf("signal %v — shutting down", sigN)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), *shutdown)
+	defer cancel()
+	if err := httpSrv.Shutdown(ctx); err != nil {
+		log.Printf("http shutdown: %v", err)
+		_ = httpSrv.Close()
+	}
 	dnsSrv.Stop()
-	_ = httpSrv.Close()
+	if persister.Enabled() {
+		if err := persister.SaveNow(); err != nil {
+			log.Printf("save state: %v", err)
+		} else {
+			log.Printf("state saved to %s", *stateFile)
+		}
+	}
+	log.Printf("stopped")
+}
+
+func env(k, d string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return d
+}
+
+func envBool(k string, d bool) bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(k)))
+	if v == "" {
+		return d
+	}
+	return v == "1" || v == "true" || v == "yes" || v == "on"
+}
+
+func isLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		// bare host?
+		host = addr
+	}
+	if host == "" || host == "localhost" || host == "127.0.0.1" || host == "::1" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func splitCSV(s string) []string {
 	var out []string
-	start := 0
-	for i := 0; i <= len(s); i++ {
-		if i == len(s) || s[i] == ',' {
-			part := trim(s[start:i])
-			if part != "" {
-				out = append(out, part)
-			}
-			start = i + 1
+	for _, p := range strings.Split(s, ",") {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
 		}
 	}
 	return out
 }
 
-func trim(s string) string {
-	for len(s) > 0 && (s[0] == ' ' || s[0] == '\t') {
-		s = s[1:]
-	}
-	for len(s) > 0 && (s[len(s)-1] == ' ' || s[len(s)-1] == '\t') {
-		s = s[:len(s)-1]
-	}
-	return s
-}
-
-func logRequest(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		next.ServeHTTP(w, r)
-		if r.URL.Path != "/metrics" && r.URL.Path != "/healthz" {
-			log.Printf("%s %s", r.Method, r.URL.Path)
-		}
-	})
-}

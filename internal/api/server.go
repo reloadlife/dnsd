@@ -19,15 +19,16 @@ type Server struct {
 	Store   *store.Memory
 	Engine  *resolve.Engine
 	DNS     *resolve.Server
+	Persist *store.Persister
 	Token   string
 	Version string
 }
 
-// Handler returns the HTTP mux.
+// Handler returns the HTTP mux with production middleware.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.healthz)
-	mux.HandleFunc("/readyz", s.healthz)
+	mux.HandleFunc("/readyz", s.readyz)
 	mux.HandleFunc("/v1/version", s.auth(s.version))
 	mux.HandleFunc("/v1/status", s.auth(s.status))
 	mux.HandleFunc("/v1/overview", s.auth(s.overview))
@@ -42,23 +43,38 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/apply", s.auth(s.apply))
 	mux.HandleFunc("/v1/resolve", s.auth(s.resolveOne))
 	mux.HandleFunc("/metrics", s.metrics)
-	return mux
+	return s.wrap(mux)
 }
 
 func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if s.Token != "" {
-			if r.Header.Get("Authorization") != "Bearer "+s.Token {
-				writeErr(w, http.StatusUnauthorized, "unauthorized", "invalid token")
-				return
-			}
+		if !bearerOK(r.Header.Get("Authorization"), s.Token) {
+			writeErr(w, http.StatusUnauthorized, "unauthorized", "invalid token")
+			return
 		}
 		next(w, r)
 	}
 }
 
+func (s *Server) touch() {
+	if s.Persist != nil {
+		s.Persist.Schedule()
+	}
+}
+
 func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, map[string]string{"status": "ok", "service": "dnsd"})
+}
+
+func (s *Server) readyz(w http.ResponseWriter, _ *http.Request) {
+	udp, tcp, _, _ := s.DNS.State()
+	if !udp && !tcp {
+		writeJSONStatus(w, http.StatusServiceUnavailable, map[string]any{
+			"status": "not_ready", "reason": "dns listeners down",
+		})
+		return
+	}
+	writeJSON(w, map[string]string{"status": "ready", "service": "dnsd"})
 }
 
 func (s *Server) version(w http.ResponseWriter, _ *http.Request) {
@@ -152,6 +168,7 @@ func (s *Server) config(w http.ResponseWriter, r *http.Request) {
 		}
 		s.Store.SetConfig(cfg)
 		res := s.doApply(false)
+		s.touch()
 		writeJSON(w, res)
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -168,12 +185,12 @@ func (s *Server) profiles(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 			return
 		}
-		// accept legacy string upstreams via raw map fallback
 		p, err := s.Store.CreateProfile(req)
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
 			return
 		}
+		s.touch()
 		writeJSONStatus(w, http.StatusCreated, p)
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -193,6 +210,7 @@ func (s *Server) profileOne(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusNotFound, "not_found", err.Error())
 			return
 		}
+		s.touch()
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -214,6 +232,7 @@ func (s *Server) rules(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
 			return
 		}
+		s.touch()
 		writeJSONStatus(w, http.StatusCreated, rule)
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -233,6 +252,7 @@ func (s *Server) ruleOne(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusNotFound, "not_found", err.Error())
 			return
 		}
+		s.touch()
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -267,6 +287,7 @@ func (s *Server) desired(w http.ResponseWriter, r *http.Request) {
 	res := s.doApply(false)
 	res.Generation = d.Generation
 	s.Store.SetLastApply(res, d.Generation)
+	s.touch()
 	writeJSON(w, res)
 }
 
@@ -276,7 +297,11 @@ func (s *Server) apply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dry := r.URL.Query().Get("dry_run") == "1" || r.URL.Query().Get("dry_run") == "true"
-	writeJSON(w, s.doApply(dry))
+	res := s.doApply(dry)
+	if !dry {
+		s.touch()
+	}
+	writeJSON(w, res)
 }
 
 func (s *Server) doApply(dry bool) pkg.ApplyResult {

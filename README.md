@@ -26,7 +26,8 @@ Default control API: **`127.0.0.1:51920`**. Default DNS: **`127.0.0.1:5353`** (s
 
 ```bash
 make build
-./bin/dnsd --listen 127.0.0.1:51920 --token dev-token --dns-listen 127.0.0.1:5353
+./bin/dnsd --listen 127.0.0.1:51920 --token dev-token --dns-listen 127.0.0.1:5353 \
+  --state-file /tmp/dnsd-state.json --allow-insecure
 
 # block + rewrite
 ./bin/dnsctl block ads.evil
@@ -39,7 +40,17 @@ dig @127.0.0.1 -p 5353 app.corp +short
 ./bin/dnsctl
 ```
 
-Env for CLI/TUI: `DNSCTL_URL` · `DNSCTL_TOKEN` · `DNSCTL_REFRESH`.
+Env: `DNSD_TOKEN` · `DNSD_STATE_FILE` · `DNSCTL_URL` · `DNSCTL_TOKEN` · `DNSCTL_REFRESH`.
+
+## Production
+
+See [docs/INSTALL.md](docs/INSTALL.md) and [docs/SECURITY.md](docs/SECURITY.md).
+
+- Strong `DNSD_TOKEN` (refuses non-loopback with `dev-token`)
+- `--state-file /var/lib/dnsd/state.json` (atomic persist)
+- systemd unit with hardening + `CAP_NET_BIND_SERVICE`
+- Optional control-API TLS · DoT/DoH listeners · outbound `bind_ip`/`bind_iface`
+- `/readyz` reflects live DNS listeners
 
 ## TUI tabs
 
@@ -86,6 +97,7 @@ systemd unit: [deploy/dnsd.service](deploy/dnsd.service).
 | Doc | |
 |-----|---|
 | [docs/API.md](docs/API.md) | HTTP contract |
-| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Flags, env, listeners |
+| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Flags, env, listeners, state |
 | [docs/TUI.md](docs/TUI.md) | TUI keys |
-| [docs/INSTALL.md](docs/INSTALL.md) | Install & run |
+| [docs/INSTALL.md](docs/INSTALL.md) | Install & production |
+| [docs/SECURITY.md](docs/SECURITY.md) | Threat model & checklist |

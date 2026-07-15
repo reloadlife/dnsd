@@ -2,6 +2,7 @@ package resolve
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -110,5 +111,17 @@ func TestTelemetry(t *testing.T) {
 	}
 	if len(snap.TopDomains) == 0 {
 		t.Fatal("expected top domains")
+	}
+}
+
+func TestValidateQuestion(t *testing.T) {
+	st := store.New()
+	e := NewEngine(st, NewTelemetry(10))
+	m := new(dns.Msg)
+	long := strings.Repeat("a", 260) + ".com"
+	m.SetQuestion(dns.Fqdn(long), dns.TypeA)
+	resp, ev := e.Handle(context.Background(), m, "1.1.1.1", "udp")
+	if ev.Action != "error" || resp == nil || resp.Rcode != dns.RcodeFormatError {
+		t.Fatalf("%+v %v", ev, resp)
 	}
 }
