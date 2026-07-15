@@ -50,7 +50,7 @@ func (s *Server) Config() api.ListenerConfig {
 	return s.cfg
 }
 
-// Start applies listener config (restarts all).
+// Start applies listener config (restarts all). Binds first so failures are returned.
 func (s *Server) Start(cfg api.ListenerConfig) error {
 	s.Stop()
 	s.mu.Lock()
@@ -58,45 +58,51 @@ func (s *Server) Start(cfg api.ListenerConfig) error {
 	s.mu.Unlock()
 
 	var errs []string
+
 	if cfg.UDP != "" {
-		udp := &dns.Server{Addr: cfg.UDP, Net: "udp", Handler: s.Engine, ReusePort: true}
-		s.mu.Lock()
-		s.udp = udp
-		s.mu.Unlock()
-		go func() {
-			log.Printf("dnsd: UDP listen %s", cfg.UDP)
-			if err := udp.ListenAndServe(); err != nil {
-				log.Printf("dnsd: UDP exit: %v", err)
-				s.mu.Lock()
-				s.udpUp = false
-				s.mu.Unlock()
-			}
-		}()
-		// brief wait for bind
-		time.Sleep(50 * time.Millisecond)
-		s.mu.Lock()
-		s.udpUp = true
-		s.mu.Unlock()
+		pc, err := net.ListenPacket("udp", cfg.UDP)
+		if err != nil {
+			errs = append(errs, "udp "+cfg.UDP+": "+err.Error())
+		} else {
+			udp := &dns.Server{PacketConn: pc, Handler: s.Engine}
+			s.mu.Lock()
+			s.udp = udp
+			s.udpUp = true
+			s.mu.Unlock()
+			go func() {
+				log.Printf("dnsd: UDP listen %s", cfg.UDP)
+				if err := udp.ActivateAndServe(); err != nil {
+					log.Printf("dnsd: UDP exit: %v", err)
+					s.mu.Lock()
+					s.udpUp = false
+					s.mu.Unlock()
+				}
+			}()
+		}
 	}
+
 	if cfg.TCP != "" {
-		tcp := &dns.Server{Addr: cfg.TCP, Net: "tcp", Handler: s.Engine, ReusePort: true}
-		s.mu.Lock()
-		s.tcp = tcp
-		s.mu.Unlock()
-		go func() {
-			log.Printf("dnsd: TCP listen %s", cfg.TCP)
-			if err := tcp.ListenAndServe(); err != nil {
-				log.Printf("dnsd: TCP exit: %v", err)
-				s.mu.Lock()
-				s.tcpUp = false
-				s.mu.Unlock()
-			}
-		}()
-		time.Sleep(50 * time.Millisecond)
-		s.mu.Lock()
-		s.tcpUp = true
-		s.mu.Unlock()
+		ln, err := net.Listen("tcp", cfg.TCP)
+		if err != nil {
+			errs = append(errs, "tcp "+cfg.TCP+": "+err.Error())
+		} else {
+			tcp := &dns.Server{Listener: ln, Handler: s.Engine}
+			s.mu.Lock()
+			s.tcp = tcp
+			s.tcpUp = true
+			s.mu.Unlock()
+			go func() {
+				log.Printf("dnsd: TCP listen %s", cfg.TCP)
+				if err := tcp.ActivateAndServe(); err != nil {
+					log.Printf("dnsd: TCP exit: %v", err)
+					s.mu.Lock()
+					s.tcpUp = false
+					s.mu.Unlock()
+				}
+			}()
+		}
 	}
+
 	if cfg.DoT != "" {
 		if cfg.DoTCert == "" || cfg.DoTKey == "" {
 			errs = append(errs, "DoT requires dot_cert and dot_key")
@@ -110,31 +116,32 @@ func (s *Server) Start(cfg api.ListenerConfig) error {
 					MinVersion:   tls.VersionTLS12,
 					NextProtos:   []string{"dot"},
 				}
-				dot := &dns.Server{
-					Addr:      cfg.DoT,
-					Net:       "tcp-tls",
-					Handler:   &protoHandler{inner: s.Engine, proto: "dot"},
-					TLSConfig: tlsCfg,
-				}
-				s.mu.Lock()
-				s.dot = dot
-				s.mu.Unlock()
-				go func() {
-					log.Printf("dnsd: DoT listen %s", cfg.DoT)
-					if err := dot.ListenAndServe(); err != nil {
-						log.Printf("dnsd: DoT exit: %v", err)
-						s.mu.Lock()
-						s.dotUp = false
-						s.mu.Unlock()
+				ln, err := tls.Listen("tcp", cfg.DoT, tlsCfg)
+				if err != nil {
+					errs = append(errs, "dot "+cfg.DoT+": "+err.Error())
+				} else {
+					dot := &dns.Server{
+						Listener: ln,
+						Handler:  &protoHandler{inner: s.Engine, proto: "dot"},
 					}
-				}()
-				time.Sleep(50 * time.Millisecond)
-				s.mu.Lock()
-				s.dotUp = true
-				s.mu.Unlock()
+					s.mu.Lock()
+					s.dot = dot
+					s.dotUp = true
+					s.mu.Unlock()
+					go func() {
+						log.Printf("dnsd: DoT listen %s", cfg.DoT)
+						if err := dot.ActivateAndServe(); err != nil {
+							log.Printf("dnsd: DoT exit: %v", err)
+							s.mu.Lock()
+							s.dotUp = false
+							s.mu.Unlock()
+						}
+					}()
+				}
 			}
 		}
 	}
+
 	if cfg.DoH != "" {
 		path := cfg.DoHPath
 		if path == "" {
@@ -147,28 +154,39 @@ func (s *Server) Start(cfg api.ListenerConfig) error {
 			_, _ = w.Write([]byte("ok"))
 		})
 		hs := &http.Server{Addr: cfg.DoH, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
-		s.mu.Lock()
-		s.dohHTTP = hs
-		s.mu.Unlock()
-		go func() {
-			log.Printf("dnsd: DoH listen %s path=%s insecure=%v", cfg.DoH, path, cfg.DoHInsecure)
-			var err error
-			if cfg.DoHInsecure || cfg.DoHCert == "" {
-				err = hs.ListenAndServe()
+
+		var (
+			ln  net.Listener
+			err error
+		)
+		if cfg.DoHInsecure || cfg.DoHCert == "" {
+			ln, err = net.Listen("tcp", cfg.DoH)
+		} else {
+			cert, e := tls.LoadX509KeyPair(cfg.DoHCert, cfg.DoHKey)
+			if e != nil {
+				err = e
 			} else {
-				err = hs.ListenAndServeTLS(cfg.DoHCert, cfg.DoHKey)
+				tlsCfg := &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
+				ln, err = tls.Listen("tcp", cfg.DoH, tlsCfg)
 			}
-			if err != nil && err != http.ErrServerClosed {
-				log.Printf("dnsd: DoH exit: %v", err)
-				s.mu.Lock()
-				s.dohUp = false
-				s.mu.Unlock()
-			}
-		}()
-		time.Sleep(50 * time.Millisecond)
-		s.mu.Lock()
-		s.dohUp = true
-		s.mu.Unlock()
+		}
+		if err != nil {
+			errs = append(errs, "doh "+cfg.DoH+": "+err.Error())
+		} else {
+			s.mu.Lock()
+			s.dohHTTP = hs
+			s.dohUp = true
+			s.mu.Unlock()
+			go func() {
+				log.Printf("dnsd: DoH listen %s path=%s insecure=%v", cfg.DoH, path, cfg.DoHInsecure)
+				if err := hs.Serve(ln); err != nil && err != http.ErrServerClosed {
+					log.Printf("dnsd: DoH exit: %v", err)
+					s.mu.Lock()
+					s.dohUp = false
+					s.mu.Unlock()
+				}
+			}()
+		}
 	}
 
 	if len(errs) > 0 {
@@ -206,7 +224,6 @@ func (s *Server) handleDoH(w http.ResponseWriter, r *http.Request) {
 	var err error
 	switch r.Method {
 	case http.MethodGet:
-		// ?dns=base64url
 		q := r.URL.Query().Get("dns")
 		if q == "" {
 			http.Error(w, "missing dns param", http.StatusBadRequest)

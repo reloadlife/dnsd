@@ -104,11 +104,24 @@ func exchangeDoH(ctx context.Context, req *dns.Msg, u api.Upstream) (*dns.Msg, s
 	}
 	httpReq.Header.Set("Content-Type", "application/dns-message")
 	httpReq.Header.Set("Accept", "application/dns-message")
+	httpReq.Header.Set("User-Agent", "dnsd/0.1")
 
-	tr := &http.Transport{Proxy: http.ProxyFromEnvironment}
+	// Prefer IPv4: many hosts have broken/empty IPv6 routes → "cannot assign requested address".
 	d := outboundDialer(u)
-	tr.DialContext = d.DialContext
-	client := &http.Client{Transport: tr, Timeout: 5 * time.Second}
+	d.FallbackDelay = -1 // disable Happy Eyeballs dual-stack racing weirdness
+	baseDial := d.DialContext
+	tr := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			// try tcp4 first
+			if c, err := baseDial(ctx, "tcp4", address); err == nil {
+				return c, nil
+			}
+			return baseDial(ctx, network, address)
+		},
+		ForceAttemptHTTP2: true,
+	}
+	client := &http.Client{Transport: tr, Timeout: 8 * time.Second}
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, url, err
