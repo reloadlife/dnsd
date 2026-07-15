@@ -1,5 +1,7 @@
 # dnsd
 
+[![ci](https://github.com/reloadlife/dnsd/actions/workflows/ci.yml/badge.svg)](https://github.com/reloadlife/dnsd/actions/workflows/ci.yml)
+
 Host **DNS resolver / policy** daemon — sister to `wireguardd`, `openvpnd`, `netpolicyd`.
 
 Custom forwarding resolver (miekg/dns) with block / rewrite / forward rules, live stats, query log, and **DoH / DoT** on both ingress and egress. Outbound queries can bind a source **IP** or **interface**.

@@ -3,7 +3,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo 0.1.
 LDFLAGS := -s -w \
 	-X main.version=$(VERSION)
 
-.PHONY: all build test vet run clean install
+.PHONY: all build test test-race vet cover ci run clean install
 
 all: build
 
@@ -15,10 +15,17 @@ build:
 test:
 	go test ./... -count=1
 
+test-race:
+	go test ./... -count=1 -race
+
+cover:
+	go test ./... -count=1 -coverprofile=coverage.out
+	go tool cover -func=coverage.out | tail -20
+
 vet:
 	go vet ./...
 
-ci: vet test build
+ci: vet test-race build
 
 run: build
 	./bin/dnsd --listen 127.0.0.1:51920 --token dev-token --dns-listen 127.0.0.1:5353
