@@ -410,10 +410,15 @@ func (m rootModel) View() string {
 
 func servingBadge(st pkgapi.Status) string {
 	parts := []string{}
-	if st.DNSServing {
-		parts = append(parts, badgeUp.Render(" DNS "))
+	if st.UDPServing {
+		parts = append(parts, badgeUp.Render(" UDP "))
 	} else {
-		parts = append(parts, badgeDown.Render(" DNS "))
+		parts = append(parts, badgeDown.Render(" UDP "))
+	}
+	if st.TCPServing {
+		parts = append(parts, badgeUp.Render(" TCP "))
+	} else {
+		parts = append(parts, badgeDown.Render(" TCP "))
 	}
 	if st.DoTServing {
 		parts = append(parts, badgeUp.Render(" DoT "))
@@ -468,6 +473,8 @@ func (m rootModel) viewHome() string {
 	body := strings.Builder{}
 	fmt.Fprintf(&body, "%s %s\n", labelStyle.Render("Version"), valueStyle.Render(st.Version))
 	fmt.Fprintf(&body, "%s %s\n", labelStyle.Render("DNS listen"), valueStyle.Render(st.DNSListen))
+	fmt.Fprintf(&body, "%s UDP=%v  TCP=%v  DoT=%v  DoH=%v\n", labelStyle.Render("Serving"),
+		st.UDPServing, st.TCPServing, st.DoTServing, st.DoHServing)
 	fmt.Fprintf(&body, "%s %s\n", labelStyle.Render("Outbound"), valueStyle.Render(first(st.BindIP, st.BindIface, "default route")))
 	fmt.Fprintf(&body, "%s %d profiles · %d rules\n", labelStyle.Render("Policy"), st.ProfileCount, st.RuleCount)
 	fmt.Fprintf(&body, "\n%s\n", sectionStyle.Render("Live"))

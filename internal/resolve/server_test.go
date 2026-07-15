@@ -92,7 +92,7 @@ func TestServerUDPAndForward(t *testing.T) {
 		t.Fatalf("%+v", resp.Answer)
 	}
 
-	// TCP path
+	// TCP path (DNS-over-TCP)
 	c.Net = "tcp"
 	resp, _, err = c.Exchange(m, tcpAddr)
 	if err != nil {
@@ -100,6 +100,12 @@ func TestServerUDPAndForward(t *testing.T) {
 	}
 	if len(resp.Answer) == 0 {
 		t.Fatal("tcp empty")
+	}
+	// ensure engine tags protocol as tcp via ServeDNS path is covered by live dig;
+	// handle() API uses explicit proto
+	_, ev := eng.Handle(context.Background(), m, "127.0.0.1", "tcp")
+	if ev.Protocol != "tcp" {
+		t.Fatalf("protocol %s", ev.Protocol)
 	}
 
 	// cache hit

@@ -37,7 +37,9 @@ func main() {
 	var (
 		listen    = flag.String("listen", env("DNSD_LISTEN", "127.0.0.1:51920"), "HTTP control API listen address")
 		token     = flag.String("token", env("DNSD_TOKEN", ""), "Bearer token for /v1/* (required unless --allow-insecure)")
-		dnsListen = flag.String("dns-listen", env("DNSD_DNS_LISTEN", "127.0.0.1:5353"), "UDP/TCP DNS listen address")
+		dnsListen = flag.String("dns-listen", env("DNSD_DNS_LISTEN", "127.0.0.1:5353"), "classic DNS listen (UDP+TCP, same addr; RFC 1035/7766)")
+		dnsUDP    = flag.String("dns-udp", env("DNSD_DNS_UDP", ""), "override UDP listen only (default: --dns-listen)")
+		dnsTCP    = flag.String("dns-tcp", env("DNSD_DNS_TCP", ""), "override TCP listen only (default: --dns-listen; empty disables TCP)")
 		bindIP    = flag.String("bind-ip", env("DNSD_BIND_IP", ""), "default outbound source IP for upstream queries")
 		bindIface = flag.String("bind-iface", env("DNSD_BIND_IFACE", ""), "default outbound interface for upstream queries")
 		upstream  = flag.String("upstream", env("DNSD_UPSTREAM", "1.1.1.1:53,8.8.8.8:53"), "comma-separated default upstreams")
@@ -82,9 +84,16 @@ func main() {
 	cfg := st.Config()
 	// CLI overrides for listen/upstream take effect unless state already set non-default listeners
 	// Always apply CLI dns-listen / bind / upstream as operational defaults on top of file.
+	// Classic DNS: UDP + TCP (DoT/DoH are separate). Default both to --dns-listen.
 	if *dnsListen != "" {
 		cfg.Listeners.UDP = *dnsListen
 		cfg.Listeners.TCP = *dnsListen
+	}
+	if *dnsUDP != "" {
+		cfg.Listeners.UDP = *dnsUDP
+	}
+	if flagDNSTCPSet() {
+		cfg.Listeners.TCP = *dnsTCP // may be "" to disable TCP
 	}
 	if *bindIP != "" {
 		cfg.BindIP = *bindIP
@@ -185,6 +194,19 @@ func env(k, d string) string {
 		return v
 	}
 	return d
+}
+
+// flagDNSTCPSet is true when operator explicitly set TCP listen (including empty = off).
+func flagDNSTCPSet() bool {
+	if os.Getenv("DNSD_DNS_TCP") != "" {
+		return true
+	}
+	for _, a := range os.Args[1:] {
+		if a == "-dns-tcp" || a == "--dns-tcp" || strings.HasPrefix(a, "-dns-tcp=") || strings.HasPrefix(a, "--dns-tcp=") {
+			return true
+		}
+	}
+	return false
 }
 
 func envBool(k string, d bool) bool {

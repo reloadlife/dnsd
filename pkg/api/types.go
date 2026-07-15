@@ -189,9 +189,12 @@ type Status struct {
 	RuleCount      int            `json:"rule_count"`
 	DNSListen      string         `json:"dns_listen,omitempty"`
 	Listeners      ListenerConfig `json:"listeners"`
-	DNSServing     bool           `json:"dns_serving"`
-	DoTServing     bool           `json:"dot_serving"`
-	DoHServing     bool           `json:"doh_serving"`
+	// DNSServing is true if UDP or TCP classic DNS is up (compat).
+	DNSServing bool `json:"dns_serving"`
+	UDPServing bool `json:"udp_serving"`
+	TCPServing bool `json:"tcp_serving"` // DNS-over-TCP (RFC 7766), same port as UDP by default
+	DoTServing bool `json:"dot_serving"`
+	DoHServing bool `json:"doh_serving"`
 	Transparent    bool           `json:"transparent"`
 	BindIP         string         `json:"bind_ip,omitempty"`
 	BindIface      string         `json:"bind_iface,omitempty"`

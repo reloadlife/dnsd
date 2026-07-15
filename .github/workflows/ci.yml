@@ -53,9 +53,14 @@ jobs:
             -d '{"pattern":"ci.local","match":"exact","action":"rewrite","enabled":true,"answers":["10.9.9.9"]}' \
             http://127.0.0.1:51929/v1/rules | grep -q rewrite
           # dig if available
+          ST=$(curl -sf -H "Authorization: Bearer ci-token" http://127.0.0.1:51929/v1/status)
+          echo "$ST" | grep -q '"udp_serving":true'
+          echo "$ST" | grep -q '"tcp_serving":true'
           if command -v dig >/dev/null; then
             dig @127.0.0.1 -p 5359 ci.local +short +time=2 | grep -q 10.9.9.9
+            dig @127.0.0.1 -p 5359 ci.local +tcp +short +time=2 | grep -q 10.9.9.9
             dig @127.0.0.1 -p 5359 x.ci.block +time=2 | grep -q NXDOMAIN
+            dig @127.0.0.1 -p 5359 x.ci.block +tcp +time=2 | grep -q NXDOMAIN
           fi
           DNSCTL_URL=http://127.0.0.1:51929 DNSCTL_TOKEN=ci-token ./bin/dnsctl status | grep -q backend
           DNSCTL_URL=http://127.0.0.1:51929 DNSCTL_TOKEN=ci-token ./bin/dnsctl rules | grep -q ci.block
@@ -73,4 +78,5 @@ jobs:
           DNSCTL_URL=http://127.0.0.1:51929 DNSCTL_TOKEN=ci-token ./bin/dnsctl rules | grep -q ci.local
           if command -v dig >/dev/null; then
             dig @127.0.0.1 -p 5359 ci.local +short +time=2 | grep -q 10.9.9.9
+            dig @127.0.0.1 -p 5359 ci.local +tcp +short +time=2 | grep -q 10.9.9.9
           fi

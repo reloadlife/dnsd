@@ -19,7 +19,9 @@ dnsd \
 |------|-----|---------|---------|
 | `--listen` | `DNSD_LISTEN` | `127.0.0.1:51920` | Control API |
 | `--token` | `DNSD_TOKEN` | *(required in prod)* | Bearer secret |
-| `--dns-listen` | `DNSD_DNS_LISTEN` | `127.0.0.1:5353` | UDP+TCP DNS |
+| `--dns-listen` | `DNSD_DNS_LISTEN` | `127.0.0.1:5353` | classic DNS UDP **and** TCP (same addr) |
+| `--dns-udp` | `DNSD_DNS_UDP` | *(same as dns-listen)* | UDP-only override |
+| `--dns-tcp` | `DNSD_DNS_TCP` | *(same as dns-listen)* | TCP-only override (set empty to disable TCP) |
 | `--bind-ip` | `DNSD_BIND_IP` | empty | outbound source IP |
 | `--bind-iface` | `DNSD_BIND_IFACE` | empty | outbound iface (`SO_BINDTODEVICE`) |
 | `--upstream` | `DNSD_UPSTREAM` | `1.1.1.1:53,8.8.8.8:53` | CSV default upstreams |
@@ -42,7 +44,8 @@ dnsd \
 
 | Field | Example |
 |-------|---------|
-| `udp` / `tcp` | `0.0.0.0:53` or `127.0.0.1:5353` |
+| `udp` | `0.0.0.0:53` — DNS-over-UDP |
+| `tcp` | `0.0.0.0:53` — DNS-over-TCP (same port is normal; required for large answers / RFC 7766) |
 | `dot` | `0.0.0.0:853` + `dot_cert` / `dot_key` |
 | `doh` | `127.0.0.1:8443` + optional cert or `doh_insecure: true` |
 | `doh_path` | `/dns-query` |

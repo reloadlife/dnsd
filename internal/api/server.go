@@ -98,6 +98,8 @@ func (s *Server) buildStatus() pkg.Status {
 		DNSListen:      s.Store.DNSListen(),
 		Listeners:      cfg.Listeners,
 		DNSServing:     udp || tcp,
+		UDPServing:     udp,
+		TCPServing:     tcp,
 		DoTServing:     dot,
 		DoHServing:     doh,
 		Transparent:    cfg.Transparent,

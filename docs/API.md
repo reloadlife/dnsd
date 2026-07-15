@@ -14,7 +14,7 @@ Authorization: Bearer <token>
 |--------|------|-------|
 | GET | `/healthz` | open |
 | GET | `/v1/version` | `{ "version": "…" }` |
-| GET | `/v1/status` | serving flags, counters, QPS |
+| GET | `/v1/status` | serving flags (udp/tcp/dot/doh), counters, QPS |
 | GET | `/v1/overview` | status + config + rules + profiles + stats + recent queries |
 | GET | `/v1/stats` | aggregates: top domains/blocked/clients, by rcode/qtype/proto |
 | GET | `/v1/queries?limit=N` | ring buffer (newest last) |
@@ -85,7 +85,24 @@ Forward:
 }
 ```
 
-Address prefixes: bare IP → DNS :53 · `tls://` / `dot://` → DoT · `https://` → DoH · `dns://` → UDP/TCP.
+Address prefixes: bare IP → classic DNS :53 (UDP then TCP) · `tls://` / `dot://` → DoT · `https://` → DoH · `dns://` → UDP/TCP.
+
+## Classic DNS (UDP + TCP)
+
+Ingress and status:
+
+| Field | Meaning |
+|-------|---------|
+| `listeners.udp` | DNS-over-UDP listen address |
+| `listeners.tcp` | DNS-over-TCP listen address (RFC 7766; usually same host:port as UDP) |
+| `udp_serving` / `tcp_serving` | live listener state |
+| `dns_serving` | true if either UDP or TCP is up |
+
+`--dns-listen` sets **both** UDP and TCP. Overrides: `--dns-udp` / `--dns-tcp` (or `DNSD_DNS_UDP` / `DNSD_DNS_TCP`).
+
+Query log `protocol` values: `udp` · `tcp` · `dot` · `doh` · `api`.
+
+Upstream classic DNS tries **UDP first**, retries **TCP** on truncation or UDP failure.
 
 ## Config
 
