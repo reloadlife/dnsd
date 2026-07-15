@@ -12,8 +12,8 @@ Companion CLI + TUI: **dnsctl**.
 
 | Area | Capability |
 |------|------------|
-| **Listen** | UDP/TCP DNS, DoT (`:853`), DoH (`/dns-query`) |
-| **Upstream** | Classic DNS, DoT (`tls://…`), DoH (`https://…/dns-query`) |
+| **Listen** | Classic DNS **UDP + TCP** (RFC 1035/7766), DoT (`:853`), DoH (`/dns-query`) |
+| **Upstream** | Classic DNS (UDP→TCP fallback), DoT (`tls://…`), DoH (`https://…/dns-query`) |
 | **Outbound** | Per-profile / per-upstream / global `bind_ip` · `bind_iface` |
 | **Policy** | block (NXDOMAIN), refuse, drop, sinkhole, rewrite (A/AAAA/CNAME), forward |
 | **Telemetry** | QPS, top domains, top blocked, top clients, RCODE/QTYPE/proto, errors |
