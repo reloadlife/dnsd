@@ -3,13 +3,12 @@
 ## Build
 
 ```bash
-cd ~/workspace/dnsd
 make build
 # or
-make install   # /usr/local/bin + ~/.local/bin + networkingd dir
+make install   # /usr/local/bin + ~/.local/bin + networkingd dir when present
 ```
 
-Requires Go 1.25+.
+Requires Go 1.25+. See [ARCHITECTURE.md](ARCHITECTURE.md) for how the daemon works.
 
 ## Run (dev)
 
