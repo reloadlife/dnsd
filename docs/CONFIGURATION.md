@@ -26,6 +26,7 @@ dnsd \
 | `--bind-iface` | `DNSD_BIND_IFACE` | empty | outbound iface (`SO_BINDTODEVICE`) |
 | `--upstream` | `DNSD_UPSTREAM` | `1.1.1.1:53,8.8.8.8:53` | CSV default upstreams |
 | `--state-file` | `DNSD_STATE_FILE` | empty | durable JSON state |
+| `--blocklist-dir` | `DNSD_BLOCKLIST_DIR` | empty | dir of `*.txt` / hosts files (ad/tracker/malware) |
 | `--tls-cert` | `DNSD_TLS_CERT` | empty | control API TLS cert |
 | `--tls-key` | `DNSD_TLS_KEY` | empty | control API TLS key |
 | `--allow-insecure` | `DNSD_ALLOW_INSECURE` | false | allow empty/`dev-token` on non-loopback |

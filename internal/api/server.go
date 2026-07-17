@@ -42,6 +42,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/desired", s.auth(s.desired))
 	mux.HandleFunc("/v1/apply", s.auth(s.apply))
 	mux.HandleFunc("/v1/resolve", s.auth(s.resolveOne))
+	mux.HandleFunc("/v1/blocklists", s.auth(s.blocklists))
 	mux.HandleFunc("/metrics", s.metrics)
 	return s.wrap(mux)
 }
@@ -90,7 +91,7 @@ func (s *Server) buildStatus() pkg.Status {
 	cfg := s.Store.Config()
 	q, b, rw, er, ch, cm := s.Engine.Tel.Counters()
 	udp, tcp, dot, doh := s.DNS.State()
-	return pkg.Status{
+	st := pkg.Status{
 		Version:        s.Version,
 		Backend:        "live",
 		ProfileCount:   len(s.Store.ListProfiles()),
@@ -116,6 +117,11 @@ func (s *Server) buildStatus() pkg.Status {
 		CacheMisses:    cm,
 		QPS:            s.Engine.Tel.QPS(),
 	}
+	if bl := s.Engine.Blocklist; bl != nil {
+		st.BlocklistEnabled = true
+		st.BlocklistCount = bl.Count()
+	}
+	return st
 }
 
 func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
@@ -304,6 +310,40 @@ func (s *Server) apply(w http.ResponseWriter, r *http.Request) {
 		s.touch()
 	}
 	writeJSON(w, res)
+}
+
+// blocklists: GET status · POST reload from configured --blocklist-dir.
+func (s *Server) blocklists(w http.ResponseWriter, r *http.Request) {
+	bl := s.Engine.Blocklist
+	switch r.Method {
+	case http.MethodGet:
+		if bl == nil {
+			writeJSON(w, map[string]any{"enabled": false, "count": 0, "sources": []string{}})
+			return
+		}
+		writeJSON(w, map[string]any{
+			"enabled": true,
+			"count":   bl.Count(),
+			"sources": bl.Sources(),
+		})
+	case http.MethodPost:
+		if bl == nil {
+			writeErr(w, http.StatusBadRequest, "no_blocklist", "blocklist not configured (--blocklist-dir)")
+			return
+		}
+		n, err := bl.Reload()
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "reload_failed", err.Error())
+			return
+		}
+		writeJSON(w, map[string]any{
+			"ok":      true,
+			"count":   n,
+			"sources": bl.Sources(),
+		})
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
 }
 
 func (s *Server) doApply(dry bool) pkg.ApplyResult {

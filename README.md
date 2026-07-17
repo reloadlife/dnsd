@@ -18,6 +18,7 @@ How it works: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 | **Upstream** | DNS (UDP→TCP fallback), DoT (`tls://…`), DoH (`https://…`) |
 | **Outbound** | Per-profile / per-upstream / global `bind_ip` · `bind_iface` |
 | **Policy** | block, refuse, drop, sinkhole, rewrite, forward |
+| **Blocklists** | Bulk ad/tracker/malware domain sets (`--blocklist-dir`, NXDOMAIN) |
 | **Telemetry** | QPS, top domains/blocked/clients, query log, errors |
 | **Control** | Bearer HTTP API · Bubble Tea TUI · CLI |
 | **State** | Optional JSON `--state-file` (atomic, survives restart) |
@@ -37,6 +38,22 @@ export DNSCTL_URL=http://127.0.0.1:51920 DNSCTL_TOKEN=dev-token
 dig @127.0.0.1 -p 5353 app.corp +short
 dig @127.0.0.1 -p 5353 app.corp +tcp +short
 ./bin/dnsctl   # TUI
+```
+
+### Ad / tracker blocklists
+
+```bash
+# fetch OISD, 1Hosts, EasyPrivacy, StevenBlack, URLhaus, …
+export DNSD_BLOCKLIST_DIR=/var/lib/dnsd/blocklists
+export DNSD_TOKEN=dev-token
+./scripts/refresh-blocklists.sh
+
+# run with bulk lists (NXDOMAIN for matches + parent suffixes)
+./bin/dnsd --listen 127.0.0.1:51920 --token dev-token --dns-listen 127.0.0.1:5353 \
+  --blocklist-dir "$DNSD_BLOCKLIST_DIR" --allow-insecure
+
+# hot-reload after refresh
+curl -X POST -H "Authorization: Bearer dev-token" http://127.0.0.1:51920/v1/blocklists
 ```
 
 ## Documentation

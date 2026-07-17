@@ -209,6 +209,9 @@ type Status struct {
 	CacheHits    int64 `json:"cache_hits"`
 	CacheMisses  int64 `json:"cache_misses"`
 	QPS          float64 `json:"qps"` // recent window
+	// Bulk ad/tracker/malware domain sets (--blocklist-dir)
+	BlocklistEnabled bool `json:"blocklist_enabled"`
+	BlocklistCount   int  `json:"blocklist_count"`
 }
 
 // QueryEvent is one resolved query for the live log.

@@ -144,13 +144,9 @@ func exchangeDoH(ctx context.Context, req *dns.Msg, u api.Upstream) (*dns.Msg, s
 
 func outboundDialer(u api.Upstream) *net.Dialer {
 	d := &net.Dialer{Timeout: 3 * time.Second, KeepAlive: 30 * time.Second}
-	if u.BindIP != "" {
-		if ip := net.ParseIP(u.BindIP); ip != nil {
-			// LocalAddr for TCP/UDP is set per-dial via Control + dual LocalAddr trick:
-			// dns.Client reuses Dialer for both; set IP in Control and LocalAddr for UDP.
-			d.LocalAddr = &net.TCPAddr{IP: ip} // may be ignored for UDP; Control handles bind IP
-		}
-	}
+	// Never set Dialer.LocalAddr to net.TCPAddr — dns.Client dials both UDP and TCP.
+	// A TCP LocalAddr makes UDP dial fail with "bind: invalid argument".
+	// Bind source IP + SO_BINDTODEVICE exclusively via Control (see bind_linux.go).
 	if u.BindIP != "" || u.BindIface != "" {
 		bindIP := net.ParseIP(u.BindIP)
 		iface := u.BindIface

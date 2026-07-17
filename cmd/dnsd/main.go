@@ -35,19 +35,20 @@ func main() {
 	}
 
 	var (
-		listen    = flag.String("listen", env("DNSD_LISTEN", "127.0.0.1:51920"), "HTTP control API listen address")
-		token     = flag.String("token", env("DNSD_TOKEN", ""), "Bearer token for /v1/* (required unless --allow-insecure)")
-		dnsListen = flag.String("dns-listen", env("DNSD_DNS_LISTEN", "127.0.0.1:5353"), "classic DNS listen (UDP+TCP, same addr; RFC 1035/7766)")
-		dnsUDP    = flag.String("dns-udp", env("DNSD_DNS_UDP", ""), "override UDP listen only (default: --dns-listen)")
-		dnsTCP    = flag.String("dns-tcp", env("DNSD_DNS_TCP", ""), "override TCP listen only (default: --dns-listen; empty disables TCP)")
-		bindIP    = flag.String("bind-ip", env("DNSD_BIND_IP", ""), "default outbound source IP for upstream queries")
-		bindIface = flag.String("bind-iface", env("DNSD_BIND_IFACE", ""), "default outbound interface for upstream queries")
-		upstream  = flag.String("upstream", env("DNSD_UPSTREAM", "1.1.1.1:53,8.8.8.8:53"), "comma-separated default upstreams")
-		stateFile = flag.String("state-file", env("DNSD_STATE_FILE", ""), "persist rules/profiles/config to this JSON path")
-		tlsCert   = flag.String("tls-cert", env("DNSD_TLS_CERT", ""), "optional TLS cert for control API")
-		tlsKey    = flag.String("tls-key", env("DNSD_TLS_KEY", ""), "optional TLS key for control API")
-		allowInsec = flag.Bool("allow-insecure", envBool("DNSD_ALLOW_INSECURE", false), "allow empty token (dev only)")
-		shutdown  = flag.Duration("shutdown-timeout", 10*time.Second, "graceful shutdown timeout")
+		listen       = flag.String("listen", env("DNSD_LISTEN", "127.0.0.1:51920"), "HTTP control API listen address")
+		token        = flag.String("token", env("DNSD_TOKEN", ""), "Bearer token for /v1/* (required unless --allow-insecure)")
+		dnsListen    = flag.String("dns-listen", env("DNSD_DNS_LISTEN", "127.0.0.1:5353"), "classic DNS listen (UDP+TCP, same addr; RFC 1035/7766)")
+		dnsUDP       = flag.String("dns-udp", env("DNSD_DNS_UDP", ""), "override UDP listen only (default: --dns-listen)")
+		dnsTCP       = flag.String("dns-tcp", env("DNSD_DNS_TCP", ""), "override TCP listen only (default: --dns-listen; empty disables TCP)")
+		bindIP       = flag.String("bind-ip", env("DNSD_BIND_IP", ""), "default outbound source IP for upstream queries")
+		bindIface    = flag.String("bind-iface", env("DNSD_BIND_IFACE", ""), "default outbound interface for upstream queries")
+		upstream     = flag.String("upstream", env("DNSD_UPSTREAM", "1.1.1.1:53,8.8.8.8:53"), "comma-separated default upstreams")
+		stateFile    = flag.String("state-file", env("DNSD_STATE_FILE", ""), "persist rules/profiles/config to this JSON path")
+		blocklistDir = flag.String("blocklist-dir", env("DNSD_BLOCKLIST_DIR", ""), "directory of *.txt/*.list/hosts files (ad/malware block)")
+		tlsCert      = flag.String("tls-cert", env("DNSD_TLS_CERT", ""), "optional TLS cert for control API")
+		tlsKey       = flag.String("tls-key", env("DNSD_TLS_KEY", ""), "optional TLS key for control API")
+		allowInsec   = flag.Bool("allow-insecure", envBool("DNSD_ALLOW_INSECURE", false), "allow empty token (dev only)")
+		shutdown     = flag.Duration("shutdown-timeout", 10*time.Second, "graceful shutdown timeout")
 	)
 	flag.Parse()
 
@@ -114,6 +115,15 @@ func main() {
 
 	tel := resolve.NewTelemetry(cfg.QueryLogSize)
 	eng := resolve.NewEngine(st, tel)
+	if *blocklistDir != "" {
+		bl := resolve.NewBlocklist(*blocklistDir)
+		if n, err := bl.Reload(); err != nil {
+			log.Printf("blocklist load %s: %v", *blocklistDir, err)
+		} else {
+			log.Printf("blocklist loaded %d domains from %s", n, *blocklistDir)
+		}
+		eng.SetBlocklist(bl)
+	}
 	dnsSrv := resolve.NewServer(eng)
 
 	if err := dnsSrv.Start(st.Config().Listeners); err != nil {

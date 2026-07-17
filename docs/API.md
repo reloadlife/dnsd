@@ -14,7 +14,7 @@ Authorization: Bearer <token>
 |--------|------|-------|
 | GET | `/healthz` | open |
 | GET | `/v1/version` | `{ "version": "…" }` |
-| GET | `/v1/status` | serving flags (udp/tcp/dot/doh), counters, QPS |
+| GET | `/v1/status` | serving flags (udp/tcp/dot/doh), counters, QPS, blocklist_count |
 | GET | `/v1/overview` | status + config + rules + profiles + stats + recent queries |
 | GET | `/v1/stats` | aggregates: top domains/blocked/clients, by rcode/qtype/proto |
 | GET | `/v1/queries?limit=N` | ring buffer (newest last) |
@@ -23,6 +23,8 @@ Authorization: Bearer <token>
 | DELETE | `/v1/profiles/{id}` | |
 | GET/POST | `/v1/rules` | block / rewrite / forward |
 | DELETE | `/v1/rules/{id}` | |
+| GET | `/v1/blocklists` | bulk ad/malware sets: `{ enabled, count, sources }` |
+| POST | `/v1/blocklists` | reload from `--blocklist-dir` without restart |
 | PUT/POST | `/v1/desired` | bulk replace + apply |
 | POST | `/v1/apply?dry_run=1` | (re)start listeners |
 | POST | `/v1/resolve` | dig-like through engine |

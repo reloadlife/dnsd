@@ -18,9 +18,10 @@ import (
 
 // Engine answers DNS queries with policy + upstreams.
 type Engine struct {
-	Store *store.Memory
-	Tel   *Telemetry
-	Cache *Cache
+	Store     *store.Memory
+	Tel       *Telemetry
+	Cache     *Cache
+	Blocklist *Blocklist // optional ad/malware domain set
 
 	mu sync.RWMutex
 }
@@ -32,6 +33,13 @@ func NewEngine(st *store.Memory, tel *Telemetry) *Engine {
 		Tel:   tel,
 		Cache: NewCache(4096),
 	}
+}
+
+// SetBlocklist attaches a bulk domain blocklist (ad/malware).
+func (e *Engine) SetBlocklist(b *Blocklist) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.Blocklist = b
 }
 
 // ServeDNS implements dns.Handler.
@@ -88,6 +96,18 @@ func (e *Engine) Handle(ctx context.Context, req *dns.Msg, client, proto string)
 		ev.RCode = dns.RcodeToString[dns.RcodeFormatError]
 		ev.LatencyMs = msSince(start)
 		return rcode(req, dns.RcodeFormatError), ev
+	}
+
+	// Bulk blocklist (ad/malware) — before per-rule policy.
+	e.mu.RLock()
+	bl := e.Blocklist
+	e.mu.RUnlock()
+	if bl != nil && bl.Match(name) {
+		ev.Action = "block"
+		ev.RuleName = "blocklist"
+		ev.RCode = "NXDOMAIN"
+		ev.LatencyMs = msSince(start)
+		return nxdomain(req), ev
 	}
 
 	// Match rule
