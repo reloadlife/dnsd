@@ -342,7 +342,14 @@ func (p *Proxy) lookup(name string, cfg api.SniConfig) ([]net.IP, error) {
 	m := new(dns.Msg)
 	m.SetQuestion(dns.Fqdn(name), dns.TypeA)
 	m.RecursionDesired = true
-	cl := &dns.Client{Timeout: 4 * time.Second}
+	// These queries leave the box, so they follow the same exit selector as the
+	// traffic they are resolving for. Letting them take the default route would
+	// expose the node's WAN address to the upstream resolver — the exact leak
+	// the bind_iface plumbing exists to prevent.
+	cl := &dns.Client{
+		Timeout: 4 * time.Second,
+		Dialer:  resolve.OutboundDialer(cfg.BindIP, cfg.BindIface, 4*time.Second),
+	}
 
 	var lastErr error
 	for _, r := range resolvers {
