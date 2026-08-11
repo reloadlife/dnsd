@@ -113,9 +113,86 @@ type ListenerConfig struct {
 	DoHInsecure bool `json:"doh_insecure,omitempty"`
 }
 
+// SniRoute is one domain family the SNI proxy is allowed to relay. It is also
+// the trigger for the DNS half: a matching name is answered with SniConfig's
+// Answers so the client comes back to this node's :443 / :80.
+type SniRoute struct {
+	ID      string    `json:"id,omitempty"`
+	Pattern string    `json:"pattern"` // docker.com, *.docker.com
+	Match   MatchKind `json:"match,omitempty"`
+	Enabled bool      `json:"enabled"`
+	// Exit selector for the relayed connection. Empty inherits SniConfig.
+	BindIface   string `json:"bind_iface,omitempty"`
+	BindIP      string `json:"bind_ip,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
+// SniConfig is the TLS/HTTP relay that pairs with the DNS hijack above.
+//
+// The relay owns :443 because it must answer on the same address DNS handed
+// out. Anything it does not route (unknown SNI, no SNI, a client outside
+// AllowCIDRs) is handed to Fallback — on our nodes that is ocserv, which keeps
+// serving VPN and its camouflage decoy untouched.
+type SniConfig struct {
+	Enabled    bool   `json:"enabled"`
+	ListenTLS  string `json:"listen_tls,omitempty"`  // 0.0.0.0:443
+	ListenHTTP string `json:"listen_http,omitempty"` // 0.0.0.0:80
+	// AllowCIDRs gates who may be RELAYED. It is deliberately narrower than the
+	// DNS ACL. Clients outside it are not rejected — they fall through to
+	// Fallback, because :443 is also the fleet's VPN ingress.
+	AllowCIDRs []string `json:"allow_cidrs,omitempty"`
+	// Answers are the addresses DNS returns for a matching name: the node IPs
+	// clients should dial. Also the loop guard — the relay refuses to dial them.
+	Answers []string `json:"answers,omitempty"`
+	// TTL for those synthetic answers (0 = 60).
+	AnswerTTL uint32 `json:"answer_ttl,omitempty"`
+	// Fallback receives every unrouted TCP connection, e.g. "127.0.0.1:8443".
+	// Empty closes them instead.
+	Fallback string `json:"fallback,omitempty"`
+	// FallbackProxyProto prepends a PROXY protocol v1 header so the backend
+	// still sees the real client IP (ocserv: listen-proxy-proto = true).
+	FallbackProxyProto bool `json:"fallback_proxy_proto,omitempty"`
+	// FallbackHTTP is the same for the :80 listener (usually empty).
+	FallbackHTTP string `json:"fallback_http,omitempty"`
+	// Resolvers resolve relayed names. MUST NOT point at this dnsd, or the
+	// hijack answer sends the relay back to itself.
+	Resolvers []string `json:"resolvers,omitempty"`
+	// Default exit selector, overridden per route.
+	BindIface      string `json:"bind_iface,omitempty"`
+	BindIP         string `json:"bind_ip,omitempty"`
+	IdleTimeoutSec int    `json:"idle_timeout_sec,omitempty"` // 0 = 120
+	MaxConns       int    `json:"max_conns,omitempty"`        // 0 = 4096
+	Routes         []SniRoute `json:"routes,omitempty"`
+}
+
+// SniStatus is live relay state (/v1/sni).
+type SniStatus struct {
+	Enabled     bool             `json:"enabled"`
+	TLSServing  bool             `json:"tls_serving"`
+	HTTPServing bool             `json:"http_serving"`
+	ListenTLS   string           `json:"listen_tls,omitempty"`
+	ListenHTTP  string           `json:"listen_http,omitempty"`
+	Active      int64            `json:"active"`
+	Routed      int64            `json:"routed_total"`
+	FellBack    int64            `json:"fallback_total"`
+	Denied      int64            `json:"denied_total"`
+	Errors      int64            `json:"errors_total"`
+	BytesUp     int64            `json:"bytes_up"`
+	BytesDown   int64            `json:"bytes_down"`
+	ByRoute     map[string]int64 `json:"by_route,omitempty"`
+	LastError   string           `json:"last_error,omitempty"`
+	Routes      []SniRoute       `json:"routes,omitempty"`
+}
+
 // RuntimeConfig is mutable daemon settings.
 type RuntimeConfig struct {
 	Listeners ListenerConfig `json:"listeners"`
+	// AllowCIDRs restricts who may query the classic DNS listeners at all.
+	// Empty = allow everyone (a public dnsd stays public). Non-empty makes
+	// every other source REFUSED, which is what lets :53 bind 0.0.0.0 safely.
+	AllowCIDRs []string `json:"allow_cidrs,omitempty"`
+	// Sni is the SNI/Host relay + the DNS hijack that feeds it.
+	Sni *SniConfig `json:"sni,omitempty"`
 	// Default upstreams when no profile matches
 	DefaultUpstreams []Upstream `json:"default_upstreams,omitempty"`
 	// Global outbound bind
@@ -212,6 +289,8 @@ type Status struct {
 	// Bulk ad/tracker/malware domain sets (--blocklist-dir)
 	BlocklistEnabled bool `json:"blocklist_enabled"`
 	BlocklistCount   int  `json:"blocklist_count"`
+	// Sni is the relay's live state (nil when never configured).
+	Sni *SniStatus `json:"sni,omitempty"`
 }
 
 // QueryEvent is one resolved query for the live log.

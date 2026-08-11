@@ -44,7 +44,7 @@ func exchangeDNS(ctx context.Context, req *dns.Msg, u api.Upstream) (*dns.Msg, s
 	if !strings.Contains(addr, ":") {
 		addr += ":53"
 	}
-	dialer := outboundDialer(u)
+	dialer := outboundDialer(u, 3*time.Second)
 	client := &dns.Client{
 		Net:     "udp",
 		Timeout: 3 * time.Second,
@@ -75,7 +75,7 @@ func exchangeDoT(ctx context.Context, req *dns.Msg, u api.Upstream) (*dns.Msg, s
 		}
 		serverName = host
 	}
-	dialer := outboundDialer(u)
+	dialer := outboundDialer(u, 3*time.Second)
 	client := &dns.Client{
 		Net: "tcp-tls",
 		TLSConfig: &tls.Config{
@@ -107,7 +107,7 @@ func exchangeDoH(ctx context.Context, req *dns.Msg, u api.Upstream) (*dns.Msg, s
 	httpReq.Header.Set("User-Agent", "dnsd/0.1")
 
 	// Prefer IPv4: many hosts have broken/empty IPv6 routes → "cannot assign requested address".
-	d := outboundDialer(u)
+	d := outboundDialer(u, 3*time.Second)
 	d.FallbackDelay = -1 // disable Happy Eyeballs dual-stack racing weirdness
 	baseDial := d.DialContext
 	tr := &http.Transport{
@@ -142,8 +142,11 @@ func exchangeDoH(ctx context.Context, req *dns.Msg, u api.Upstream) (*dns.Msg, s
 	return msg, url, nil
 }
 
-func outboundDialer(u api.Upstream) *net.Dialer {
-	d := &net.Dialer{Timeout: 3 * time.Second, KeepAlive: 30 * time.Second}
+func outboundDialer(u api.Upstream, timeout time.Duration) *net.Dialer {
+	if timeout <= 0 {
+		timeout = 3 * time.Second
+	}
+	d := &net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second}
 	// Never set Dialer.LocalAddr to net.TCPAddr — dns.Client dials both UDP and TCP.
 	// A TCP LocalAddr makes UDP dial fail with "bind: invalid argument".
 	// Bind source IP + SO_BINDTODEVICE exclusively via Control (see bind_linux.go).

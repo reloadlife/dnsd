@@ -25,6 +25,7 @@ Authorization: Bearer <token>
 | DELETE | `/v1/rules/{id}` | |
 | GET | `/v1/blocklists` | bulk ad/malware sets: `{ enabled, count, sources }` |
 | POST | `/v1/blocklists` | reload from `--blocklist-dir` without restart |
+| GET/PUT | `/v1/sni` | SNI relay: GET live status, PUT config + routes |
 | PUT/POST | `/v1/desired` | bulk replace + apply |
 | POST | `/v1/apply?dry_run=1` | (re)start listeners |
 | POST | `/v1/resolve` | dig-like through engine |
@@ -127,9 +128,51 @@ Upstream classic DNS tries **UDP first**, retries **TCP** on truncation or UDP f
   "bind_iface": "",
   "cache_ttl_max": 300,
   "query_log_size": 2000,
-  "transparent": false
+  "transparent": false,
+  "allow_cidrs": ["195.24.237.0/24", "10.0.0.0/8"],
+  "sni": { "…": "see SNI relay" }
 }
 ```
+
+`allow_cidrs` restricts who may query DNS at all; every other source gets
+REFUSED. Empty (the default) serves everyone, so an existing deployment does not
+change behaviour on upgrade.
+
+## SNI relay
+
+```json
+PUT /v1/sni
+{
+  "enabled": true,
+  "listen_tls": "0.0.0.0:443",
+  "listen_http": "0.0.0.0:80",
+  "allow_cidrs": ["195.24.237.0/24"],
+  "answers": ["195.24.237.4"],
+  "answer_ttl": 60,
+  "resolvers": ["1.1.1.1:53"],
+  "fallback": "127.0.0.1:8443",
+  "fallback_proxy_proto": true,
+  "fallback_http": "",
+  "bind_iface": "",
+  "idle_timeout_sec": 120,
+  "max_conns": 4096,
+  "routes": [
+    { "pattern": "docker.com", "match": "suffix", "enabled": true, "bind_iface": "eth1" }
+  ]
+}
+```
+
+A matching name is answered with `answers` (A only — AAAA is NODATA so clients
+cannot bypass the relay over IPv6), and connections arriving for it are carried
+to the origin out `bind_iface`. Everything unmatched goes to `fallback`
+verbatim, with a PROXY v1 header when `fallback_proxy_proto` is set.
+
+Rejected at config time: a `resolvers` entry that is loopback or one of
+`answers`, because the relay would resolve the hijacked name back to itself.
+
+`GET /v1/sni` returns counters (`routed_total`, `fallback_total`,
+`denied_total`, bytes, per-route hits), also exported at `/metrics` as
+`dnsd_sni_*`.
 
 ## Resolve
 

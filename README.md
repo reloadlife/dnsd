@@ -19,6 +19,8 @@ How it works: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 | **Outbound** | Per-profile / per-upstream / global `bind_ip` · `bind_iface` |
 | **Policy** | block, refuse, drop, sinkhole, rewrite, forward |
 | **Blocklists** | Bulk ad/tracker/malware domain sets (`--blocklist-dir`, NXDOMAIN) |
+| **Client ACL** | `allow_cidrs` — who may query at all (empty = everyone) |
+| **SNI relay** | Hijack a domain to this host in DNS, then relay its TLS/HTTP out a chosen interface |
 | **Telemetry** | QPS, top domains/blocked/clients, query log, errors |
 | **Control** | Bearer HTTP API · Bubble Tea TUI · CLI |
 | **State** | Optional JSON `--state-file` (atomic, survives restart) |
@@ -55,6 +57,40 @@ export DNSD_TOKEN=dev-token
 # hot-reload after refresh
 curl -X POST -H "Authorization: Bearer dev-token" http://127.0.0.1:51920/v1/blocklists
 ```
+
+## SNI relay ("smart DNS")
+
+Two halves of one list. A route makes dnsd answer that name with **this host's**
+addresses, and makes the relay carry the resulting connection to the real origin
+over a chosen exit interface.
+
+```bash
+curl -X PUT -H "Authorization: Bearer $DNSD_TOKEN" http://127.0.0.1:51920/v1/sni -d '{
+  "enabled": true,
+  "listen_tls": "0.0.0.0:443",
+  "listen_http": "0.0.0.0:80",
+  "allow_cidrs": ["195.24.237.0/24"],
+  "answers": ["195.24.237.4"],
+  "resolvers": ["1.1.1.1:53"],
+  "fallback": "127.0.0.1:8443",
+  "fallback_proxy_proto": true,
+  "routes": [{"pattern": "docker.com", "match": "suffix", "enabled": true, "bind_iface": "eth1"}]
+}'
+```
+
+Rules that matter:
+
+- **`resolvers` must not point at this dnsd.** The hijack would resolve the name
+  to this host and the relay would dial itself. Rejected at config time.
+- **AAAA is answered NODATA** for hijacked names, so dual-stack clients cannot
+  reach the origin directly and bypass the relay.
+- **Nothing is ever rejected on the listener.** Unknown SNI, absent SNI, or a
+  client outside `allow_cidrs` all go to `fallback` untouched — that port is
+  usually shared with a VPN server, and refusing would take it down. Set
+  `fallback_proxy_proto` so the backend still sees the real client IP
+  (ocserv: `listen-proxy-proto = true`).
+- `allow_cidrs` here gates **relaying**; the top-level `allow_cidrs` in
+  `/v1/config` gates **DNS** and is normally the wider list.
 
 ## Documentation
 

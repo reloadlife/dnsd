@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/reloadlife/dnsd/internal/resolve"
+	"github.com/reloadlife/dnsd/internal/sni"
 	"github.com/reloadlife/dnsd/internal/store"
 	pkg "github.com/reloadlife/dnsd/pkg/api"
 )
@@ -19,6 +21,7 @@ type Server struct {
 	Store   *store.Memory
 	Engine  *resolve.Engine
 	DNS     *resolve.Server
+	Sni     *sni.Proxy
 	Persist *store.Persister
 	Token   string
 	Version string
@@ -39,6 +42,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/profiles/", s.auth(s.profileOne))
 	mux.HandleFunc("/v1/rules", s.auth(s.rules))
 	mux.HandleFunc("/v1/rules/", s.auth(s.ruleOne))
+	mux.HandleFunc("/v1/sni", s.auth(s.sniConfig))
 	mux.HandleFunc("/v1/desired", s.auth(s.desired))
 	mux.HandleFunc("/v1/apply", s.auth(s.apply))
 	mux.HandleFunc("/v1/resolve", s.auth(s.resolveOne))
@@ -120,6 +124,10 @@ func (s *Server) buildStatus() pkg.Status {
 	if bl := s.Engine.Blocklist; bl != nil {
 		st.BlocklistEnabled = true
 		st.BlocklistCount = bl.Count()
+	}
+	if s.Sni != nil {
+		sniSt := s.Sni.Status()
+		st.Sni = &sniSt
 	}
 	return st
 }
@@ -267,6 +275,101 @@ func (s *Server) ruleOne(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// sniConfig: GET live relay status · PUT/POST replace the relay config.
+//
+// It is a partial update of RuntimeConfig on purpose — the dashboard edits the
+// relay without having to round-trip (and risk clobbering) upstreams, rules,
+// and listener settings it does not own.
+func (s *Server) sniConfig(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		if s.Sni == nil {
+			writeJSON(w, pkg.SniStatus{})
+			return
+		}
+		writeJSON(w, s.Sni.Status())
+	case http.MethodPut, http.MethodPost:
+		var in pkg.SniConfig
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			writeErr(w, http.StatusBadRequest, "bad_request", "invalid JSON")
+			return
+		}
+		if err := validateSni(in); err != nil {
+			writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+			return
+		}
+		cfg := s.Store.Config()
+		cfg.Sni = &in
+		s.Store.SetConfig(cfg)
+		res := s.doApply(false)
+		s.touch()
+		writeJSON(w, res)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+// validateSni rejects configs that would break the node rather than failing
+// later on a live connection.
+func validateSni(c pkg.SniConfig) error {
+	if !c.Enabled {
+		return nil
+	}
+	if c.ListenTLS == "" && c.ListenHTTP == "" {
+		return fmt.Errorf("enabled relay needs listen_tls or listen_http")
+	}
+	if len(c.Answers) == 0 {
+		return fmt.Errorf("answers required: DNS must have node addresses to hand out")
+	}
+	for _, a := range c.Answers {
+		if net.ParseIP(strings.TrimSpace(a)) == nil {
+			return fmt.Errorf("answer %q is not an IP", a)
+		}
+	}
+	for _, cidr := range c.AllowCIDRs {
+		if !validCIDR(cidr) {
+			return fmt.Errorf("allow_cidrs entry %q is not an IP or CIDR", cidr)
+		}
+	}
+	// A resolver that points back at this daemon resolves the hijacked name to
+	// this node and the relay dials itself. The loop guard catches it at run
+	// time; catching it here is cheaper and explains itself.
+	for _, r := range c.Resolvers {
+		host := strings.TrimSpace(r)
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		if ip := net.ParseIP(host); ip != nil {
+			for _, a := range c.Answers {
+				if own := net.ParseIP(strings.TrimSpace(a)); own != nil && own.Equal(ip) {
+					return fmt.Errorf("resolver %q is one of our own answers — the relay would loop", r)
+				}
+			}
+			if ip.IsLoopback() {
+				return fmt.Errorf("resolver %q is loopback — it would resolve via this dnsd and loop", r)
+			}
+		}
+	}
+	for i, rt := range c.Routes {
+		if strings.TrimSpace(rt.Pattern) == "" {
+			return fmt.Errorf("route %d: pattern required", i)
+		}
+	}
+	return nil
+}
+
+func validCIDR(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	if strings.Contains(s, "/") {
+		_, _, err := net.ParseCIDR(s)
+		return err == nil
+	}
+	return net.ParseIP(s) != nil
+}
+
 func (s *Server) desired(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut && r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -369,6 +472,18 @@ func (s *Server) doApply(dry bool) pkg.ApplyResult {
 		udp, tcp, dot, doh := s.DNS.State()
 		res.Message = fmt.Sprintf("udp=%v tcp=%v dot=%v doh=%v", udp, tcp, dot, doh)
 	}
+	if s.Sni != nil {
+		sniCfg := pkg.SniConfig{}
+		if cfg.Sni != nil {
+			sniCfg = *cfg.Sni
+		}
+		if err := s.Sni.Start(sniCfg); err != nil {
+			// A relay that cannot bind must not fail the DNS apply — DNS is the
+			// half that still works standalone.
+			res.OK = false
+			res.Errors = append(res.Errors, err.Error())
+		}
+	}
 	_, _, gen := s.Store.LastApply()
 	s.Store.SetLastApply(res, gen)
 	return res
@@ -437,6 +552,35 @@ dnsd_qps %f
 # TYPE dnsd_serving gauge
 dnsd_serving %d
 `, st.ProfileCount, st.RuleCount, st.QueryCount, st.BlockCount, st.ErrorCount, st.QPS, boolToInt(st.DNSServing))
+
+	if st.Sni == nil {
+		return
+	}
+	// dnsd_sni_fallback_total is the one to alert on: it is every VPN client
+	// still reaching ocserv through the relay. If it flatlines while
+	// dnsd_sni_serving is 1, ingress is broken even though the process is up.
+	_, _ = fmt.Fprintf(w, `# TYPE dnsd_sni_serving gauge
+dnsd_sni_serving %d
+# TYPE dnsd_sni_active gauge
+dnsd_sni_active %d
+# TYPE dnsd_sni_routed_total counter
+dnsd_sni_routed_total %d
+# TYPE dnsd_sni_fallback_total counter
+dnsd_sni_fallback_total %d
+# TYPE dnsd_sni_denied_total counter
+dnsd_sni_denied_total %d
+# TYPE dnsd_sni_errors_total counter
+dnsd_sni_errors_total %d
+# TYPE dnsd_sni_bytes_up_total counter
+dnsd_sni_bytes_up_total %d
+# TYPE dnsd_sni_bytes_down_total counter
+dnsd_sni_bytes_down_total %d
+`, boolToInt(st.Sni.TLSServing || st.Sni.HTTPServing), st.Sni.Active, st.Sni.Routed,
+		st.Sni.FellBack, st.Sni.Denied, st.Sni.Errors, st.Sni.BytesUp, st.Sni.BytesDown)
+
+	for pattern, n := range st.Sni.ByRoute {
+		_, _ = fmt.Fprintf(w, "dnsd_sni_route_total{pattern=%q} %d\n", pattern, n)
+	}
 }
 
 func boolToInt(b bool) int {

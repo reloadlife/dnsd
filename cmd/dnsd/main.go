@@ -18,6 +18,7 @@ import (
 
 	"github.com/reloadlife/dnsd/internal/api"
 	"github.com/reloadlife/dnsd/internal/resolve"
+	"github.com/reloadlife/dnsd/internal/sni"
 	"github.com/reloadlife/dnsd/internal/store"
 	pkg "github.com/reloadlife/dnsd/pkg/api"
 )
@@ -43,6 +44,7 @@ func main() {
 		bindIP       = flag.String("bind-ip", env("DNSD_BIND_IP", ""), "default outbound source IP for upstream queries")
 		bindIface    = flag.String("bind-iface", env("DNSD_BIND_IFACE", ""), "default outbound interface for upstream queries")
 		upstream     = flag.String("upstream", env("DNSD_UPSTREAM", "1.1.1.1:53,8.8.8.8:53"), "comma-separated default upstreams")
+		allowCIDRs   = flag.String("allow-cidrs", env("DNSD_ALLOW_CIDRS", ""), "comma-separated client CIDRs allowed to query DNS (empty = everyone)")
 		stateFile    = flag.String("state-file", env("DNSD_STATE_FILE", ""), "persist rules/profiles/config to this JSON path")
 		blocklistDir = flag.String("blocklist-dir", env("DNSD_BLOCKLIST_DIR", ""), "directory of *.txt/*.list/hosts files (ad/malware block)")
 		tlsCert      = flag.String("tls-cert", env("DNSD_TLS_CERT", ""), "optional TLS cert for control API")
@@ -111,6 +113,9 @@ func main() {
 			cfg.DefaultUpstreams = ups
 		}
 	}
+	if *allowCIDRs != "" {
+		cfg.AllowCIDRs = splitCSV(*allowCIDRs)
+	}
 	st.SetConfig(cfg)
 
 	tel := resolve.NewTelemetry(cfg.QueryLogSize)
@@ -131,10 +136,26 @@ func main() {
 		// still serve control API so operators can fix config
 	}
 
+	// The relay reads config live, so route edits apply to the next connection
+	// without a restart; only listen addresses need Start().
+	sniProxy := sni.New(func() pkg.SniConfig {
+		c := st.Config()
+		if c.Sni != nil {
+			return *c.Sni
+		}
+		return pkg.SniConfig{}
+	})
+	if c := st.Config().Sni; c != nil && c.Enabled {
+		if err := sniProxy.Start(*c); err != nil {
+			log.Printf("sni relay error: %v", err)
+		}
+	}
+
 	apiSrv := &api.Server{
 		Store:   st,
 		Engine:  eng,
 		DNS:     dnsSrv,
+		Sni:     sniProxy,
 		Persist: persister,
 		Token:   tok,
 		Version: version,
@@ -189,6 +210,7 @@ func main() {
 		_ = httpSrv.Close()
 	}
 	dnsSrv.Stop()
+	sniProxy.Stop()
 	if persister.Enabled() {
 		if err := persister.SaveNow(); err != nil {
 			log.Printf("save state: %v", err)
@@ -250,4 +272,3 @@ func splitCSV(s string) []string {
 	}
 	return out
 }
-

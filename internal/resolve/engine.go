@@ -89,6 +89,18 @@ func (e *Engine) Handle(ctx context.Context, req *dns.Msg, client, proto string)
 	ev.Name = name
 	ev.QType = dns.TypeToString[q.Qtype]
 
+	cfg := e.Store.Config()
+
+	// Client ACL. This is what makes binding 0.0.0.0:53 safe — without it the
+	// node is an open resolver. Empty list keeps stock dnsd public.
+	if !ClientAllowed(cfg.AllowCIDRs, client) {
+		ev.Action = "refuse"
+		ev.RuleName = "acl"
+		ev.RCode = "REFUSED"
+		ev.LatencyMs = msSince(start)
+		return rcode(req, dns.RcodeRefused), ev
+	}
+
 	// Production guards: length, class, qtype
 	if err := validateQuestion(name, q); err != nil {
 		ev.Action = "error"
@@ -108,6 +120,28 @@ func (e *Engine) Handle(ctx context.Context, req *dns.Msg, client, proto string)
 		ev.RCode = "NXDOMAIN"
 		ev.LatencyMs = msSince(start)
 		return nxdomain(req), ev
+	}
+
+	// SNI relay hijack. A name the relay is configured to carry must resolve to
+	// this node, not to the real host — otherwise the client goes direct and
+	// the relay never sees it. Sits before user rules so the route list is the
+	// single source of truth for both halves; a blocklist hit still wins.
+	if sni := cfg.Sni; sni != nil && sni.Enabled && len(sni.Answers) > 0 {
+		if rt := MatchRoute(sni.Routes, name); rt != nil {
+			ev.Action = "rewrite"
+			ev.RuleName = "sni:" + rt.Pattern
+			ev.RuleID = rt.ID
+			// synthesize emits A records only for v4 answers, so an AAAA query
+			// gets NODATA. That is required: a real AAAA would let a dual-stack
+			// client reach the origin directly and bypass the relay.
+			msg, answers, err := synthesize(req, &api.DnsRule{Answers: sni.Answers, TTL: sni.AnswerTTL})
+			if err == nil {
+				ev.Answers = answers
+				ev.RCode = dns.RcodeToString[msg.Rcode]
+				ev.LatencyMs = msSince(start)
+				return msg, ev
+			}
+		}
 	}
 
 	// Match rule
