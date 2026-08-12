@@ -303,6 +303,15 @@ func (s *Server) sniConfig(w http.ResponseWriter, r *http.Request) {
 		s.Store.SetConfig(cfg)
 		res := s.doApply(false)
 		s.touch()
+		// A relay that was asked to be enabled and could not bind is a failure,
+		// and must not answer 200. Something is holding the port, and the
+		// caller — a cutover script, or an operator watching the console — has
+		// to see that now rather than discover it from the first user whose
+		// connection goes nowhere.
+		if !res.OK {
+			writeJSONStatus(w, http.StatusServiceUnavailable, res)
+			return
+		}
 		writeJSON(w, res)
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
