@@ -272,14 +272,15 @@ func (p *Proxy) toFallback(c net.Conn, head []byte, addr string, cfg api.SniConf
 		return
 	}
 	atomic.AddInt64(&p.fellBack, 1)
+	// One write, not two. Sending the PROXY line and the replayed ClientHello
+	// separately makes them separate segments, and ocserv then resets the
+	// connection often enough to look like a flaky VPN rather than a bug here.
+	var first []byte
 	if cfg.FallbackProxyProto {
-		if _, err := up.Write([]byte(proxyV1Header(c))); err != nil {
-			_ = up.Close()
-			p.fail("fallback proxy header: " + err.Error())
-			return
-		}
+		first = append(first, proxyV1Header(c)...)
 	}
-	if _, err := up.Write(head); err != nil {
+	first = append(first, head...)
+	if _, err := up.Write(first); err != nil {
 		_ = up.Close()
 		p.fail("fallback replay: " + err.Error())
 		return

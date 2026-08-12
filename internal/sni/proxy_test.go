@@ -25,19 +25,13 @@ func backend(t *testing.T) (addr string, got chan []byte) {
 			return
 		}
 		defer c.Close()
-		// The PROXY line and the replayed handshake bytes are separate writes,
-		// so keep reading for a beat instead of asserting on one segment.
-		_ = c.SetReadDeadline(time.Now().Add(1500 * time.Millisecond))
-		var acc bytes.Buffer
+		// Deliberately ONE read. The PROXY line and the replayed ClientHello
+		// must arrive together: ocserv resets the connection when they land as
+		// separate segments, which shows up as an intermittently broken VPN.
+		_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
 		buf := make([]byte, 4096)
-		for {
-			n, err := c.Read(buf)
-			acc.Write(buf[:n])
-			if err != nil {
-				break
-			}
-		}
-		got <- acc.Bytes()
+		n, _ := c.Read(buf)
+		got <- buf[:n]
 	}()
 	t.Cleanup(func() { _ = ln.Close() })
 	return ln.Addr().String(), got
