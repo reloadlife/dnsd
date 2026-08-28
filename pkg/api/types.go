@@ -181,6 +181,10 @@ type SniStatus struct {
 	BytesDown   int64            `json:"bytes_down"`
 	ByRoute     map[string]int64 `json:"by_route,omitempty"`
 	LastError   string           `json:"last_error,omitempty"`
+	// LastErrorAt is when LastError was recorded (RFC3339, UTC). Empty when
+	// there is no current error. Without it a caller cannot tell a live
+	// failure from one that ended days ago.
+	LastErrorAt string `json:"last_error_at,omitempty"`
 	Routes      []SniRoute       `json:"routes,omitempty"`
 }
 

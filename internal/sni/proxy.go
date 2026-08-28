@@ -48,6 +48,7 @@ type Proxy struct {
 	active, routed, fellBack, denied, errs int64
 	bytesUp, bytesDown                     int64
 	lastErr                                atomic.Value // string
+	lastErrAt                              atomic.Value // time.Time
 
 	routeMu  sync.Mutex
 	routeHit map[string]int64
@@ -143,6 +144,11 @@ func (p *Proxy) Status() api.SniStatus {
 	p.routeMu.Unlock()
 
 	last, _ := p.lastErr.Load().(string)
+	lastAt, _ := p.lastErrAt.Load().(time.Time)
+	lastAtStr := ""
+	if last != "" && !lastAt.IsZero() {
+		lastAtStr = lastAt.UTC().Format(time.RFC3339)
+	}
 	live := p.Config()
 	return api.SniStatus{
 		Enabled:     live.Enabled,
@@ -159,6 +165,7 @@ func (p *Proxy) Status() api.SniStatus {
 		BytesDown:   atomic.LoadInt64(&p.bytesDown),
 		ByRoute:     byRoute,
 		LastError:   last,
+		LastErrorAt: lastAtStr,
 		Routes:      live.Routes,
 	}
 }
@@ -251,6 +258,7 @@ func (p *Proxy) relay(c net.Conn, head []byte, name string, port int, rt api.Sni
 			_ = up.Close()
 			return err
 		}
+		p.ok()
 		p.splice(c, up, cfg)
 		return nil
 	}
@@ -285,6 +293,7 @@ func (p *Proxy) toFallback(c net.Conn, head []byte, addr string, cfg api.SniConf
 		p.fail("fallback replay: " + err.Error())
 		return
 	}
+	p.ok()
 	p.splice(c, up, cfg)
 }
 
@@ -441,6 +450,26 @@ func (p *Proxy) hit(pattern string) {
 func (p *Proxy) fail(msg string) {
 	atomic.AddInt64(&p.errs, 1)
 	p.lastErr.Store(msg)
+	p.lastErrAt.Store(time.Now())
+}
+
+// ok clears the last error after a connection is established and its opening
+// bytes are delivered.
+//
+// Without this, last_error is permanent: a single failure years ago still
+// reads as the relay's current state, because nothing ever unset it. That is
+// not a cosmetic problem — a stale "fallback 127.0.0.1:9444: connection
+// refused" left over from an ocserv restart sent operators hunting a fallback
+// outage that had been over for days, while errors_total sat frozen and every
+// connection succeeded. errors_total remains the durable "has this ever
+// happened" counter; last_error now answers "is it happening", and
+// last_error_at says when it last did.
+func (p *Proxy) ok() {
+	if _, ok := p.lastErr.Load().(string); !ok {
+		return // nothing stored yet — avoid a needless write on the hot path
+	}
+	p.lastErr.Store("")
+	p.lastErrAt.Store(time.Time{})
 }
 
 func firstNonEmpty(a, b string) string {
