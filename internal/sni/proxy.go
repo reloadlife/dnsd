@@ -211,14 +211,18 @@ func (p *Proxy) handle(c net.Conn, isTLS bool) {
 
 	fallback := cfg.Fallback
 	port := 443
+	// FallbackProxyProto exists for ocserv behind :443. A plain HTTP backend
+	// behind :80 would read the PROXY line as a garbage request line.
+	proxyProto := cfg.FallbackProxyProto
 	if !isTLS {
 		fallback = cfg.FallbackHTTP
 		port = 80
+		proxyProto = false
 	}
 
 	rt := resolve.MatchRoute(cfg.Routes, name)
 	if rt == nil {
-		p.toFallback(c, head.Bytes(), fallback, cfg)
+		p.toFallback(c, head.Bytes(), fallback, proxyProto, cfg)
 		return
 	}
 	// The route matched but this client is not allowed to be relayed. It still
@@ -226,7 +230,7 @@ func (p *Proxy) handle(c net.Conn, isTLS bool) {
 	// internet, and rejecting here would take the fleet down.
 	if !resolve.ClientAllowed(cfg.AllowCIDRs, remoteIP(c)) {
 		atomic.AddInt64(&p.denied, 1)
-		p.toFallback(c, head.Bytes(), fallback, cfg)
+		p.toFallback(c, head.Bytes(), fallback, proxyProto, cfg)
 		return
 	}
 
@@ -270,7 +274,7 @@ func (p *Proxy) relay(c net.Conn, head []byte, name string, port int, rt api.Sni
 
 // toFallback hands an unrouted connection to the local backend (ocserv),
 // optionally announcing the real client with PROXY protocol v1.
-func (p *Proxy) toFallback(c net.Conn, head []byte, addr string, cfg api.SniConfig) {
+func (p *Proxy) toFallback(c net.Conn, head []byte, addr string, proxyProto bool, cfg api.SniConfig) {
 	if addr == "" {
 		return
 	}
@@ -284,7 +288,7 @@ func (p *Proxy) toFallback(c net.Conn, head []byte, addr string, cfg api.SniConf
 	// separately makes them separate segments, and ocserv then resets the
 	// connection often enough to look like a flaky VPN rather than a bug here.
 	var first []byte
-	if cfg.FallbackProxyProto {
+	if proxyProto {
 		first = append(first, proxyV1Header(c)...)
 	}
 	first = append(first, head...)

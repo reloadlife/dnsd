@@ -151,8 +151,10 @@ type SniConfig struct {
 	Fallback string `json:"fallback,omitempty"`
 	// FallbackProxyProto prepends a PROXY protocol v1 header so the backend
 	// still sees the real client IP (ocserv: listen-proxy-proto = true).
+	// TLS listener only — FallbackHTTP always gets the request bare.
 	FallbackProxyProto bool `json:"fallback_proxy_proto,omitempty"`
-	// FallbackHTTP is the same for the :80 listener (usually empty).
+	// FallbackHTTP is the same for the :80 listener (usually empty), minus
+	// the PROXY header.
 	FallbackHTTP string `json:"fallback_http,omitempty"`
 	// Resolvers resolve relayed names. MUST NOT point at this dnsd, or the
 	// hijack answer sends the relay back to itself.

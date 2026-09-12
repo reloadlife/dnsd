@@ -101,6 +101,38 @@ func TestUnroutedGoesToFallbackWithProxyHeader(t *testing.T) {
 	}
 }
 
+// FallbackProxyProto is for ocserv behind :443. An HTTP backend behind :80
+// would read the PROXY line as a malformed request line and reject every
+// unrouted request, so the HTTP listener must replay the request bare.
+func TestHTTPFallbackNeverGetsProxyHeader(t *testing.T) {
+	fb, got := backend(t)
+	listen := freePort(t)
+	startProxy(t, api.SniConfig{
+		Enabled:            true,
+		ListenHTTP:         listen,
+		FallbackHTTP:       fb,
+		FallbackProxyProto: true,
+		Answers:            []string{"203.0.113.1"},
+		Routes:             []api.SniRoute{{Pattern: "docker.com", Match: api.MatchSuffix, Enabled: true}},
+	})
+
+	c, err := net.DialTimeout("tcp", listen, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_, _ = c.Write([]byte("GET / HTTP/1.1\r\nHost: unrouted.example\r\n\r\n"))
+
+	select {
+	case b := <-got:
+		if !strings.HasPrefix(string(b), "GET / HTTP/1.1\r\n") {
+			t.Fatalf("HTTP fallback got %q, want the bare request", firstLine(string(b)))
+		}
+	case <-time.After(4 * time.Second):
+		t.Fatal("HTTP fallback backend never received the connection")
+	}
+}
+
 // A client outside AllowCIDRs must NOT be rejected — it falls back. Rejecting
 // would drop VPN clients, since the relay shares :443 with ocserv.
 func TestDeniedClientFallsBackInsteadOfClosing(t *testing.T) {
