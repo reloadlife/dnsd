@@ -126,7 +126,16 @@ func (e *Engine) Handle(ctx context.Context, req *dns.Msg, client, proto string)
 	// this node, not to the real host — otherwise the client goes direct and
 	// the relay never sees it. Sits before user rules so the route list is the
 	// single source of truth for both halves; a blocklist hit still wins.
-	if sni := cfg.Sni; sni != nil && sni.Enabled && len(sni.Answers) > 0 {
+	//
+	// AllowCIDRs gates BOTH halves: a client that may not be relayed must not
+	// be pointed at the relay either. Sending it here anyway is not a policy
+	// decision, it is a broken connection — the relay falls the client through
+	// to the VPN backend, which answers TLS with its own certificate, so the
+	// client sees a certificate mismatch for a site that worked before. VPN
+	// peers are the case that matters: their traffic already leaves through
+	// their tunnel's exit, so relaying it a second time buys nothing.
+	if sni := cfg.Sni; sni != nil && sni.Enabled && len(sni.Answers) > 0 &&
+		ClientAllowed(sni.AllowCIDRs, client) {
 		if rt := MatchRoute(sni.Routes, name); rt != nil {
 			ev.Action = "rewrite"
 			ev.RuleName = "sni:" + rt.Pattern

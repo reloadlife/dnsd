@@ -95,3 +95,28 @@ func TestDisabledRouteIsNotHijacked(t *testing.T) {
 		t.Fatal("disabled route was hijacked")
 	}
 }
+
+// A VPN peer already leaves through its tunnel's exit. Hijacking its lookup
+// sends it to a relay that will not carry it, and the fallback answers with
+// the VPN backend's certificate — a cert error on a site that worked before.
+func TestHijackSkippedForClientTheRelayWillNotCarry(t *testing.T) {
+	st := store.New()
+	cfg := st.Config()
+	cfg.Sni = &api.SniConfig{
+		Enabled:    true,
+		Answers:    []string{"195.24.237.4", "49.12.132.21"},
+		AllowCIDRs: []string{"2.187.249.153/32", "195.24.237.0/24"},
+		Routes: []api.SniRoute{
+			{Pattern: "docker.com", Match: api.MatchSuffix, Enabled: true},
+		},
+	}
+	st.SetConfig(cfg)
+	e := NewEngine(st, NewTelemetry(100))
+
+	if _, ev := ask(t, e, "registry.docker.com", dns.TypeA, "2.187.249.153"); ev.Action != "rewrite" {
+		t.Fatalf("relayable client: action = %s, want rewrite", ev.Action)
+	}
+	if _, ev := ask(t, e, "registry.docker.com", dns.TypeA, "100.69.80.7"); ev.Action == "rewrite" {
+		t.Fatal("VPN peer outside the relay's allow list was pointed at the relay")
+	}
+}
