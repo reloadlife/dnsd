@@ -131,9 +131,12 @@ func main() {
 	}
 	dnsSrv := resolve.NewServer(eng)
 
+	// Fatal at startup: a process that serves the control API and the SNI relay
+	// but no DNS looks healthy to systemd while every client resolves nothing.
+	// Exiting lets Restart= retry until the port frees. Listener changes pushed
+	// later through the API stay non-fatal (api.Server reports them instead).
 	if err := dnsSrv.Start(st.Config().Listeners); err != nil {
-		log.Printf("dns listener error: %v", err)
-		// still serve control API so operators can fix config
+		log.Fatalf("dns listener error: %v", err)
 	}
 
 	// The relay reads config live, so route edits apply to the next connection
